@@ -92,10 +92,45 @@
       background: rgba(60, 120, 90, 0.2);
       color: #c4f5d8;
     }
+    .suggest-alert.warn {
+      border: 1px solid rgba(255, 208, 120, 0.42);
+      background: rgba(120, 100, 60, 0.18);
+      color: #ffe0a3;
+    }
     .suggest-alert.err {
       border: 1px solid rgba(255, 120, 150, 0.35);
       background: rgba(120, 60, 80, 0.2);
       color: #ffc8d4;
+    }
+    .tries-line {
+      margin-top: 0.75rem;
+      font-size: 0.9rem;
+      color: rgba(230, 224, 245, 0.9);
+    }
+    .tries-line .muted { color: var(--muted); }
+    .progress-wrap {
+      margin: 0.8rem 0 0.35rem;
+    }
+    .progress-rail {
+      height: 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(255, 255, 255, 0.04);
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, rgba(139, 92, 255, 0.75), rgba(255, 45, 146, 0.75));
+      transition: width 0.35s ease;
+    }
+    .progress-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-top: 0.4rem;
+      font-size: 0.82rem;
+      color: var(--muted);
     }
   </style>
 </head>
@@ -106,14 +141,29 @@
     <div class="suggest-card">
       <p>Додај Instagram корисник на агрегаторот. Проверуваме дали е ноќен клуб, бар или место со настани.</p>
       {% if result %}
-      <div class="suggest-alert {% if result.ok %}ok{% else %}err{% endif %}" role="status">
-        {{ result.message }}
+      {% set code = result.code|default('') %}
+      {% set cls = 'err' %}
+      {% if code == 'pending' %}{% set cls = 'ok' %}{% endif %}
+      {% if code == 'added' %}{% set cls = 'ok' %}{% endif %}
+      {% if code == 'exists' %}{% set cls = 'warn' %}{% endif %}
+      {% if code == 'global_cap' %}{% set cls = 'warn' %}{% endif %}
+      <div class="suggest-alert {{ cls }}" role="status" id="main-status">
+        {% if code == 'pending' %}Pending{% elif code == 'added' %}Додадено.{% elif code == 'exists' %}Веќе е додадено.{% elif code == 'cooldown' %}Пробај подоцна.{% elif code == 'global_cap' %}Лимитот за овој месец е достигнат. Прати на <a href="mailto:vladimir.ivanovski5@gmail.com" style="color:inherit;text-decoration:underline;">vladimir.ivanovski5@gmail.com</a>.{% else %}{{ result.message }}{% endif %}
       </div>
-      {% if result.ok %}
-      <p style="margin-top:1rem;"><a href="{{ url_for('index') }}" style="color:var(--neon-violet);font-weight:700;">← Кај евентите</a></p>
       {% endif %}
+      {% if job_id %}
+      <div class="progress-wrap" id="progress-wrap" aria-label="progress">
+        <div class="progress-rail" aria-hidden="true">
+          <div class="progress-bar" id="progress-bar"></div>
+        </div>
+        <div class="progress-meta">
+          <span id="progress-text">Верификација…</span>
+          <span id="progress-eta">~2–4 мин</span>
+        </div>
+      </div>
       {% endif %}
-      {% if not result or not result.ok %}
+      {% set code_now = (result.code|default('') if result else '') %}
+      {% if not result or (code_now not in ['pending','added']) %}
       <form method="post" action="{{ url_for('suggest_account') }}" class="suggest-form" id="suggest-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token or '' }}">
         <input type="text" name="website" value="" style="display:none" tabindex="-1" autocomplete="off">
@@ -121,12 +171,14 @@
         <input type="text" id="suggest-username" name="username" value="{{ form_username or '' }}" placeholder="на пр. cabaretclique" maxlength="64" autocomplete="off" required>
         <button type="submit" id="suggest-submit">Испрати</button>
       </form>
-      {% if job_id %}
-      <div class="suggest-alert ok" id="job-box" role="status">
-        Барањето е примено. Се обработува… (ID: {{ job_id }})
+      <div class="tries-line" id="tries-line">
+        <span class="muted">Обиди:</span> <strong id="tries-used">{{ tries_used|default(0) }}</strong>/<strong id="tries-max">{{ tries_max|default(2) }}</strong>
+        <span class="muted" id="cooldown-wrap"{% if not reset_at_iso %} style="display:none"{% endif %}>
+          · следен обид за: <strong id="cooldown-timer">--:--:--</strong>
+        </span>
       </div>
+      <p class="suggest-note">Максимум 2 предлози во 12 часа. Додека еден е Pending, не можеш да пратиш друг.</p>
       {% endif %}
-      <p class="suggest-note">Процесот може да трае неколку минути. Ако профилот не е релевантен, од истата мрежа следните 24 часа не можеш да предложиш друг.</p>
       <script>
         (function () {
           var f = document.getElementById('suggest-form');
@@ -138,20 +190,79 @@
             });
           }
 
+          var resetIso = {{ reset_at_iso|tojson }};
+          var cooldownWrap = document.getElementById('cooldown-wrap');
+          var cooldownTimer = document.getElementById('cooldown-timer');
+          function tickCooldown() {
+            if (!resetIso || !cooldownWrap || !cooldownTimer) return;
+            var t = Date.parse(resetIso);
+            if (isNaN(t)) return;
+            var ms = t - Date.now();
+            if (ms <= 0) {
+              cooldownWrap.style.display = 'none';
+              return;
+            }
+            cooldownWrap.style.display = '';
+            var sec = Math.floor(ms / 1000);
+            var h = Math.floor(sec / 3600); sec %= 3600;
+            var m = Math.floor(sec / 60); var s = sec % 60;
+            cooldownTimer.textContent =
+              String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+          }
+          tickCooldown();
+          setInterval(tickCooldown, 1000);
+
           var jobId = {{ job_id|tojson }};
           if (!jobId) return;
-          var box = document.getElementById('job-box');
+          var box = document.getElementById('main-status');
+          var bar = document.getElementById('progress-bar');
+          var ptxt = document.getElementById('progress-text');
+          var peta = document.getElementById('progress-eta');
+          var startMs = Date.now();
+
+          function setProgress(pct, text, eta) {
+            if (bar) bar.style.width = Math.max(0, Math.min(100, pct)) + '%';
+            if (ptxt && text) ptxt.textContent = text;
+            if (peta && eta) peta.textContent = eta;
+          }
+
+          // Smooth-ish “feel good” progress, capped at 92% until done.
+          function softProgress(status) {
+            var elapsed = (Date.now() - startMs) / 1000;
+            var pct = 0;
+            if (status === 'queued') {
+              pct = 8 + Math.min(12, elapsed * 1.2);
+              setProgress(pct, 'Во редица…', '~чекање');
+              return;
+            }
+            if (status === 'running') {
+              // Ramps to 92% over ~180s
+              pct = 20 + Math.min(72, (elapsed / 180) * 72);
+              setProgress(pct, 'Верификација…', '~2–4 мин');
+              return;
+            }
+          }
           function poll() {
             fetch('/api/suggest_status/' + jobId, { headers: { 'Accept': 'application/json' } })
               .then(function (r) { return r.json(); })
               .then(function (d) {
                 if (!d || !d.ok) return;
                 if (!box) return;
+                if (typeof d.reset_at_iso === 'string' && d.reset_at_iso) resetIso = d.reset_at_iso;
+                if (typeof d.tries_used === 'number') {
+                  var tu = document.getElementById('tries-used');
+                  if (tu) tu.textContent = String(d.tries_used);
+                }
+                if (typeof d.status === 'string') softProgress(d.status);
                 if (d.done) {
-                  box.className = 'suggest-alert ' + (d.result_ok ? 'ok' : 'err');
-                  box.textContent = d.message || (d.result_ok ? 'Готово.' : 'Не успеа.');
                   if (d.result_ok) {
-                    setTimeout(function () { window.location.href = '/'; }, 1200);
+                    box.className = 'suggest-alert ok';
+                    box.textContent = 'Додадено.';
+                    setProgress(100, 'Готово', '');
+                  } else {
+                    box.className = 'suggest-alert err';
+                    box.textContent = d.message || 'Не е настан.';
+                    setProgress(100, 'Готово', '');
                   }
                   return;
                 }
@@ -162,7 +273,6 @@
           setTimeout(poll, 1200);
         })();
       </script>
-      {% endif %}
     </div>
   </main>
 </body>

@@ -29,11 +29,13 @@ from catalog_db import (
     fetch_flat_events_filtered,
     list_usernames,
     random_weekend_surprise_entries,
+    suggest_has_pending_job,
     suggest_job_create,
     suggest_job_get,
+    suggest_global_monthly_remaining,
+    suggest_global_monthly_try_consume,
     suggest_log_submission,
-    suggest_rate_limited,
-    suggest_submit_is_blocked,
+    suggest_window_info,
     username_in_catalog,
 )
 from suggest_pipeline import client_ip_hash
@@ -402,6 +404,9 @@ def suggest_account():
     if request.method == "GET":
         tok = secrets.token_urlsafe(24)
         session["csrf_suggest"] = tok
+        used, reset_at = suggest_window_info(
+            client_ip_hash(request.remote_addr, request.headers.get("X-Forwarded-For"))
+        )
         return render_template(
             "suggest.html",
             nav="suggest",
@@ -409,6 +414,10 @@ def suggest_account():
             form_username="",
             job_id=None,
             csrf_token=tok,
+            tries_used=used,
+            tries_max=2,
+            reset_at_iso=reset_at.isoformat() if reset_at else "",
+            global_remaining=suggest_global_monthly_remaining(),
         )
 
     raw = (request.form.get("username") or "").strip()
@@ -423,13 +432,18 @@ def suggest_account():
     def _render_err(msg: str):
         new_tok = secrets.token_urlsafe(24)
         session["csrf_suggest"] = new_tok
+        used, reset_at = suggest_window_info(ip_h)
         return render_template(
             "suggest.html",
             nav="suggest",
-            result={"ok": False, "message": msg},
+            result={"ok": False, "code": "err", "message": msg},
             form_username=raw,
             job_id=None,
             csrf_token=new_tok,
+            tries_used=used,
+            tries_max=2,
+            reset_at_iso=reset_at.isoformat() if reset_at else "",
+            global_remaining=suggest_global_monthly_remaining(),
         )
 
     if not ip_h:
@@ -439,22 +453,60 @@ def suggest_account():
     if not tok or tok != session.get("csrf_suggest"):
         return _render_err("Сесијата истече. Освежи ја страната и обиди се повторно.")
 
-    if suggest_submit_is_blocked(ip_h):
-        return _render_err(
-            "Не можеш да предложиш нов профил 24 часа откако претходната проверка не помина."
-        )
-
-    if suggest_rate_limited(ip_h):
-        return _render_err(
-            "Премногу обиди денес од оваа мрежа. Обиди се подоцна."
-        )
+    if suggest_has_pending_job(ip_h):
+        return _render_err("Веќе имаш барање во обработка.")
 
     handle = raw.lstrip("@").strip()
     if not handle:
         return _render_err("Внеси валидно корисничко име.")
 
     if username_in_catalog(handle):
-        return _render_err(f"@{handle} веќе е во каталогот — не треба повторно да се додава.")
+        return render_template(
+            "suggest.html",
+            nav="suggest",
+            result={"ok": False, "code": "exists", "message": "Веќе е додадено."},
+            form_username="",
+            job_id=None,
+            csrf_token=secrets.token_urlsafe(24),
+            tries_used=0,
+            tries_max=2,
+            reset_at_iso="",
+            global_remaining=suggest_global_monthly_remaining(),
+        )
+
+    used, reset_at = suggest_window_info(ip_h)
+    if used >= 2 and reset_at is not None:
+        return render_template(
+            "suggest.html",
+            nav="suggest",
+            result={"ok": False, "code": "cooldown", "message": "Пробај подоцна."},
+            form_username="",
+            job_id=None,
+            csrf_token=secrets.token_urlsafe(24),
+            tries_used=used,
+            tries_max=2,
+            reset_at_iso=reset_at.isoformat(),
+            global_remaining=suggest_global_monthly_remaining(),
+        )
+
+    # Global monthly cap (does not count "already in DB", checked above).
+    if not suggest_global_monthly_try_consume():
+        return render_template(
+            "suggest.html",
+            nav="suggest",
+            result={
+                "ok": False,
+                "code": "global_cap",
+                "message": "Лимитот за овој месец е достигнат. Прати ни профил на email.",
+            },
+            form_username="",
+            job_id=None,
+            csrf_token=secrets.token_urlsafe(24),
+            tries_used=used,
+            tries_max=2,
+            reset_at_iso=reset_at.isoformat() if reset_at else "",
+            global_remaining=0,
+        )
 
     suggest_log_submission(ip_h)
     job_id = suggest_job_create(raw, ip_h)
@@ -464,10 +516,14 @@ def suggest_account():
     return render_template(
         "suggest.html",
         nav="suggest",
-        result=None,
+        result={"ok": True, "code": "pending", "message": "Pending"},
         form_username="",
         job_id=job_id,
         csrf_token=new_tok,
+        tries_used=used + 1,
+        tries_max=2,
+        reset_at_iso=(reset_at.isoformat() if reset_at else (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()),
+        global_remaining=suggest_global_monthly_remaining(),
     )
 
 
@@ -476,6 +532,7 @@ def suggest_status(job_id: int):
     j = suggest_job_get(job_id)
     if not j:
         return jsonify({"ok": False, "status": "missing"}), 404
+    used, reset_at = suggest_window_info(str(j.get("ip_hash") or ""))
     return jsonify(
         {
             "ok": True,
@@ -484,6 +541,9 @@ def suggest_status(job_id: int):
             "result_ok": bool(j.get("ok")) if j.get("ok") is not None else None,
             "message": j.get("message") or "",
             "canonical_username": j.get("canonical_username") or "",
+            "tries_used": used,
+            "tries_max": 2,
+            "reset_at_iso": reset_at.isoformat() if reset_at else "",
         }
     )
 

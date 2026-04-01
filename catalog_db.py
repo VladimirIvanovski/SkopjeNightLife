@@ -30,9 +30,12 @@ SCRAPE_USERNAMES_PATH = ROOT / "back-end" / "data" / "scrape_usernames.txt"
 # Railway Postgres: set DATABASE_URL (postgres://...).
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
-# After a rejected /suggest, same IP hash cannot submit again for this long.
-SUGGEST_REJECT_COOLDOWN = timedelta(hours=24)
-SUGGEST_MAX_SUBMITS_PER_24H_PER_IP = 3
+# Suggest rules:
+# - max 2 suggestions per 12 hours per IP hash
+# - cannot suggest another while one is pending
+SUGGEST_WINDOW = timedelta(hours=12)
+SUGGEST_MAX_PER_WINDOW = 2
+SUGGEST_GLOBAL_MONTHLY_LIMIT = 350
 
 # Lowercase Instagram usernames hidden from feed, /api/events, user picker, and /u/<name> (404).
 HIDDEN_FROM_FEED_USERNAMES: frozenset[str] = frozenset({"equilibriumdaynight"})
@@ -90,6 +93,11 @@ CREATE TABLE IF NOT EXISTS suggest_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_suggest_jobs_status ON suggest_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_suggest_jobs_ip ON suggest_jobs(ip_hash);
+
+CREATE TABLE IF NOT EXISTS suggest_global_monthly (
+  ym TEXT PRIMARY KEY, -- YYYY-MM
+  used INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -375,38 +383,20 @@ def _parse_block_created_at(raw: str | None) -> datetime | None:
         return None
 
 
-def suggest_submit_is_blocked(ip_hash: str) -> bool:
-    """True if this IP hash was rejected within the last SUGGEST_REJECT_COOLDOWN window."""
+def suggest_has_pending_job(ip_hash: str) -> bool:
     if not ip_hash:
         return False
     with closing(get_connection()) as conn:
         r = conn.execute(
-            "SELECT created_at FROM suggest_submit_blocks WHERE ip_hash = %s LIMIT 1",
+            """
+            SELECT 1
+            FROM suggest_jobs
+            WHERE ip_hash = %s AND status IN ('queued', 'running')
+            LIMIT 1
+            """,
             (ip_hash,),
         ).fetchone()
-        if not r:
-            return False
-        created = r["created_at"] if isinstance(r.get("created_at"), datetime) else _parse_block_created_at(r.get("created_at"))
-        if created is None:
-            return True
-        return datetime.now(timezone.utc) - created < SUGGEST_REJECT_COOLDOWN
-
-
-def suggest_submit_block_ip(ip_hash: str) -> None:
-    """Record rejection time; refreshes cooldown window if the same hash is blocked again."""
-    if not ip_hash:
-        return
-    now = datetime.now(timezone.utc)
-    with closing(get_connection()) as conn:
-        conn.execute(
-            """
-            INSERT INTO suggest_submit_blocks (ip_hash, created_at)
-            VALUES (%s, %s)
-            ON CONFLICT(ip_hash) DO UPDATE SET created_at = excluded.created_at
-            """,
-            (ip_hash, now),
-        )
-        conn.commit()
+        return r is not None
 
 
 def suggest_log_submission(ip_hash: str) -> None:
@@ -421,18 +411,25 @@ def suggest_log_submission(ip_hash: str) -> None:
         conn.commit()
 
 
-def suggest_rate_limited(ip_hash: str) -> bool:
-    """True if this IP exceeded SUGGEST_MAX_SUBMITS_PER_24H_PER_IP in last 24 hours."""
+def suggest_window_info(ip_hash: str) -> tuple[int, datetime | None]:
+    """Returns (count_in_window, reset_at_utc). reset_at is oldest_attempt+SUGGEST_WINDOW."""
     if not ip_hash:
-        return False
-    since = datetime.now(timezone.utc) - timedelta(hours=24)
+        return 0, None
+    since = datetime.now(timezone.utc) - SUGGEST_WINDOW
     with closing(get_connection()) as conn:
         row = conn.execute(
-            "SELECT COUNT(*) AS c FROM suggest_submit_log WHERE ip_hash = %s AND created_at >= %s",
+            """
+            SELECT COUNT(*) AS c, MIN(created_at) AS oldest
+            FROM suggest_submit_log
+            WHERE ip_hash = %s AND created_at >= %s
+            """,
             (ip_hash, since),
         ).fetchone()
         c = int(row["c"]) if row else 0
-        return c >= int(SUGGEST_MAX_SUBMITS_PER_24H_PER_IP)
+        oldest = row["oldest"] if row else None
+        if not oldest or not isinstance(oldest, datetime):
+            return c, None
+        return c, oldest + SUGGEST_WINDOW
 
 
 def suggest_job_create(username_raw: str, ip_hash: str) -> int:
@@ -507,6 +504,45 @@ def suggest_job_finish(
             (bool(ok), (message or "")[:800], canonical_username, now, job_id),
         )
         conn.commit()
+
+
+def _ym_utc(now: datetime | None = None) -> str:
+    n = now or datetime.now(timezone.utc)
+    return f"{n.year:04d}-{n.month:02d}"
+
+
+def suggest_global_monthly_remaining() -> int:
+    ym = _ym_utc()
+    with closing(get_connection()) as conn:
+        r = conn.execute(
+            "SELECT used FROM suggest_global_monthly WHERE ym = %s",
+            (ym,),
+        ).fetchone()
+        used = int(r["used"]) if r and r.get("used") is not None else 0
+        return max(0, int(SUGGEST_GLOBAL_MONTHLY_LIMIT) - used)
+
+
+def suggest_global_monthly_try_consume() -> bool:
+    """Atomically consume 1 from monthly allowance. Returns True if allowed."""
+    ym = _ym_utc()
+    with closing(get_connection()) as conn:
+        conn.execute("BEGIN")
+        r = conn.execute(
+            """
+            INSERT INTO suggest_global_monthly (ym, used)
+            VALUES (%s, 1)
+            ON CONFLICT (ym) DO UPDATE
+            SET used = suggest_global_monthly.used + 1
+            WHERE suggest_global_monthly.used < %s
+            RETURNING used
+            """,
+            (ym, int(SUGGEST_GLOBAL_MONTHLY_LIMIT)),
+        ).fetchone()
+        if not r:
+            conn.execute("ROLLBACK")
+            return False
+        conn.execute("COMMIT")
+        return True
 
 
 def _has_price_clause(has_price: bool | None) -> tuple[str, list[Any]]:

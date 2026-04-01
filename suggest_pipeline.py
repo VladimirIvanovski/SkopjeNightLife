@@ -57,12 +57,7 @@ def process_user_suggestion(
     Returns dict: ok (bool), message (str), username (str|None), did_block (bool).
     On rejected suggestion (not nightlife), IP is blocked via catalog_db.
     """
-    from catalog_db import (
-        suggest_submit_block_ip,
-        suggest_submit_is_blocked,
-        sync_from_json,
-        username_in_catalog,
-    )
+    from catalog_db import sync_from_json, username_in_catalog
 
     if not ip_hash:
         return {
@@ -72,16 +67,7 @@ def process_user_suggestion(
             "did_block": False,
         }
 
-    if suggest_submit_is_blocked(ip_hash):
-        return {
-            "ok": False,
-            "message": (
-                "Не можеш да предложиш нов профил 24 часа откако претходната проверка не помина. "
-                "Обиди се подоцна или контактирај нè преку Контакт."
-            ),
-            "username": None,
-            "did_block": True,
-        }
+    # Cooldown/pending enforcement is handled before enqueue in the web route.
 
     _load_env()
     _ensure_import_paths()
@@ -239,7 +225,7 @@ def process_user_suggestion(
         except Exception:
             bio_ok = False
         if not bio_ok:
-            suggest_submit_block_ip(ip_hash)
+            # Rejected (counts as an attempt; cooldown window is handled via suggest_submit_log).
             by_u = dict(catalog.get("by_username") or {})
             by_u.pop(canonical, None)
             catalog["by_username"] = by_u
@@ -249,12 +235,9 @@ def process_user_suggestion(
             sync_from_json()
             return {
                 "ok": False,
-                "message": (
-                    "Овој профил не изгледа како ноќен клуб/бар/настани — нема доволно докази "
-                    "во објавите или во биографијата. Следните 24 часа не можеш да предложиш друг профил од оваа мрежа."
-                ),
+                "message": "Овој профил не изгледа како ноќен клуб/бар/настани — нема доволно докази во објавите или во биографијата. Следните 12 часа не можеш да предложиш друг профил",
                 "username": canonical,
-                "did_block": True,
+                "did_block": False,
             }
 
     rows = load_scrape_rows(SCRAPE_USERNAMES_TXT)
@@ -266,7 +249,7 @@ def process_user_suggestion(
 
     return {
         "ok": True,
-        "message": f"@{canonical} е додаден во NightLife Skopje. Ви благодариме!",
+        "message": "Додадено.",
         "username": canonical,
         "did_block": False,
     }
