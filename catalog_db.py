@@ -705,11 +705,11 @@ def fetch_flat_events_for_weekend_range(date_from: date, date_to: date) -> list[
         rows = conn.execute(sql, args).fetchall()
     out: list[dict] = []
     for r in rows:
-        post = json.loads(r["post_json"])
+        post = r["post_json"] if isinstance(r.get("post_json"), dict) else json.loads(r["post_json"])
         media = pick_media_for_post(post)
         if not media:
             continue
-        prof = json.loads(r["profile_json"] or "{}")
+        prof = r["profile_json"] if isinstance(r.get("profile_json"), dict) else json.loads(r["profile_json"] or "{}")
         un = r["username"]
         display_name = prof.get("full_name") or un.replace(".", " ").title()
         out.append(
