@@ -282,7 +282,7 @@ def ensure_database() -> None:
     """Create schema and import seed JSON when DB is empty."""
     with closing(get_connection()) as conn:
         row = conn.execute("SELECT COUNT(*) AS c FROM posts").fetchone()
-        n = int(row[0]) if row else 0
+        n = int(row["c"]) if row else 0
     if n == 0 and CATALOG_JSON_PATH.is_file():
         sync_from_json()
 
