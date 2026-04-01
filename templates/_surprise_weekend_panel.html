@@ -1,0 +1,20 @@
+{# Fragment for /api/surprise-weekend — expects surprise_entries, weekend_fri, weekend_sun, date_query_suffix #}
+<section class="surprise-weekend" aria-labelledby="surprise-weekend-heading">
+  <div class="surprise-weekend-inner">
+    <div class="surprise-weekend-head">
+      <h2 class="surprise-weekend-title" id="surprise-weekend-heading">Викенд изненадување</h2>
+      <span class="surprise-weekend-dates">
+        Петок–Недела · {{ weekend_fri.strftime('%d.%m.%Y') }} – {{ weekend_sun.strftime('%d.%m.%Y') }}
+      </span>
+    </div>
+    {% if surprise_entries %}
+    <div class="surprise-weekend-grid">
+      {% for entry in surprise_entries %}
+      {% include '_event_card.html' %}
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="surprise-weekend-empty">Нема настани со AI-датум за овој викенд — врати се после нови објави.</p>
+    {% endif %}
+  </div>
+</section>

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="mk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Викенд изненадување — NightLife Skopje</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@700;800&display=swap" rel="stylesheet">
+  <style>
+{% include '_page_skin.html' %}
+{% include '_nav_styles.html' %}
+{% include '_surprise_weekend_styles.html' %}
+  </style>
+</head>
+<body>
+  {% include '_site_header.html' %}
+  <main>
+    <div class="weekend-toolbar">
+      <a href="{{ url_for('weekend_surprise') }}" class="weekend-refresh-btn">Освежи — нови 3 случајни</a>
+    </div>
+    {% include '_surprise_weekend_panel.html' %}
+  </main>
+  {% include '_event_countdown_script.html' %}
+</body>
+</html>

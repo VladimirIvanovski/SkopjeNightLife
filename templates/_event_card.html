@@ -1,0 +1,28 @@
+{# entry: username, post, media; feed_mode hides profile strip on /u/x #}
+<article class="item">
+  {% if not feed_mode|default(false) %}
+  <div class="event-user-line">
+    <a href="{{ url_for('by_user', username=entry.username) }}{{ date_query_suffix }}">@{{ entry.username }}</a>
+  </div>
+  {% endif %}
+  <div class="media-wrap">
+    {% if entry.media.resource_type == 'video' %}
+    <video controls playsinline preload="metadata" src="{{ entry.media.secure_url }}"></video>
+    {% else %}
+    <img src="{{ entry.media.secure_url }}" alt="" loading="lazy">
+    {% endif %}
+    {% set tiso = entry.post | event_countdown_iso %}
+    {% if tiso %}
+    <span class="event-countdown" data-target="{{ tiso }}" title="Одбројување до почеток на настанот (Скопје)">…</span>
+    {% else %}
+    {% set when = entry.post.timestamp | posted_ago %}
+    {% if when %}
+    <span class="posted-badge" title="Објавено на Instagram">{{ when }}</span>
+    {% endif %}
+    {% endif %}
+  </div>
+  {% with post=entry.post %}
+  {% include '_gemini_analysis.html' %}
+  {% include '_post_instagram_btn.html' %}
+  {% endwith %}
+</article>

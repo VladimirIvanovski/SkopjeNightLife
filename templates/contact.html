@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="mk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Контакт — NightLife Skopje</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@700;800&display=swap" rel="stylesheet">
+  <style>
+{% include '_page_skin.html' %}
+{% include '_nav_styles.html' %}
+    .contact-page h1 {
+      font-family: var(--font-display);
+      font-size: 1.5rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin: 0 0 1rem;
+    }
+    .contact-card {
+      padding: 1.35rem 1.4rem;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(18, 16, 28, 0.75);
+      max-width: 36rem;
+    }
+    .contact-card p {
+      margin: 0 0 1rem;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      color: rgba(230, 224, 245, 0.95);
+    }
+    .contact-card p:last-child { margin-bottom: 0; }
+    .contact-email {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-weight: 700;
+      font-size: 1rem;
+      color: var(--neon-violet);
+      text-decoration: none;
+      word-break: break-all;
+    }
+    .contact-email:hover {
+      color: var(--neon-pink);
+      text-decoration: underline;
+    }
+    .contact-list {
+      margin: 0.75rem 0 0;
+      padding-left: 1.2rem;
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.65;
+    }
+    .contact-list li { margin: 0.35rem 0; }
+  </style>
+</head>
+<body>
+  {% include '_site_header.html' %}
+  <main class="contact-page">
+    <h1>Контакт</h1>
+    <div class="contact-card">
+      <p>За пријавени багови, соработка, идеи за функции или било што друго — пиши ми:</p>
+      <p>
+        <a class="contact-email" href="mailto:vladimir.ivanovski5@gmail.com">vladimir.ivanovski5@gmail.com</a>
+      </p>
+      <p>Идеи што би биле супер за сајтот:</p>
+      <ul class="contact-list">
+        <li>известувања за омилени клубови / изведувачи;</li>
+        <li>споделување на настан на социјални мрежи со убава „карта“;</li>
+        <li>мала мапа на Скопје со настани;</li>
+        <li>темна/светла тема или PWA (инсталирај како апликација).</li>
+      </ul>
+    </div>
+  </main>
+</body>
+</html>

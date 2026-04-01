@@ -1,0 +1,363 @@
+{# Expects: filter_action, filter_clear, date_from, date_to, has_price, dow, role, filter_active, search_q (optional) — Flatpickr in <head> #}
+<style>
+  .filter-bar.filter-panel-wrap {
+    margin-bottom: 2rem;
+    padding: 0;
+    border: none;
+    background: transparent;
+  }
+  .filter-bar .filter-panel-inner {
+    padding: 1.25rem 1.35rem 1.35rem;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 45, 146, 0.22);
+    background: linear-gradient(
+      165deg,
+      rgba(18, 16, 28, 0.92) 0%,
+      rgba(30, 22, 45, 0.75) 50%,
+      rgba(18, 16, 28, 0.88) 100%
+    );
+    box-shadow:
+      0 4px 28px rgba(0, 0, 0, 0.45),
+      0 0 0 1px rgba(139, 92, 255, 0.12),
+      inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+  .filter-bar .filter-title {
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    margin: 0 0 1rem;
+    color: var(--text);
+  }
+  .filter-bar .filter-controls-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 1rem 1.25rem;
+    align-items: end;
+    margin-bottom: 1rem;
+  }
+  .filter-bar .filter-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .filter-bar .filter-field label,
+  .filter-bar .filter-label-text {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: rgba(212, 204, 232, 0.85);
+  }
+  .filter-bar .filter-field input[type="search"],
+  .filter-bar .filter-field input[type="text"],
+  .filter-bar .filter-field input[type="number"],
+  .filter-bar .filter-field select {
+    font-family: var(--font-ui);
+    font-size: 0.95rem;
+    min-height: 2.75rem;
+    padding: 0.5rem 0.75rem;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 12px;
+    width: 100%;
+    max-width: 100%;
+  }
+  .filter-bar .filter-field select {
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238f879e' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10l-5 5z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    padding-right: 2.25rem;
+  }
+  .filter-bar .filter-field select:focus,
+  .filter-bar .filter-field input:focus {
+    outline: none;
+    border-color: rgba(255, 45, 146, 0.55);
+    box-shadow: 0 0 0 3px rgba(139, 92, 255, 0.2);
+  }
+  .filter-bar .filter-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    min-height: 2.75rem;
+    padding: 0.35rem 0;
+    cursor: pointer;
+    font-family: var(--font-ui);
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--text);
+    user-select: none;
+  }
+  .filter-bar .filter-checkbox input {
+    width: 1.1rem;
+    height: 1.1rem;
+    accent-color: #ff2d92;
+    cursor: pointer;
+  }
+  .filter-bar .filter-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.65rem 1rem;
+    padding-top: 0.25rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+  }
+  .filter-bar .filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-family: var(--font-ui);
+    font-size: 0.88rem;
+    font-weight: 600;
+    padding: 0.55rem 1rem;
+    min-height: 2.75rem;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text);
+    cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .filter-bar .filter-chip:hover {
+    border-color: rgba(255, 45, 146, 0.45);
+    box-shadow: 0 0 16px rgba(255, 45, 146, 0.15);
+  }
+  .filter-bar .filter-chip[aria-expanded="true"] {
+    border-color: rgba(139, 92, 255, 0.55);
+    background: rgba(139, 92, 255, 0.14);
+  }
+  .filter-bar .filter-chip-value {
+    font-weight: 500;
+    color: var(--muted);
+    font-size: 0.8rem;
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .filter-bar .filter-chip-value.has-range {
+    color: #c9b8e8;
+  }
+  .filter-bar .filter-toolbar-spacer {
+    flex: 1;
+    min-width: 0.5rem;
+  }
+  .filter-bar .filter-form button[type="submit"] {
+    font-family: var(--font-ui);
+    font-size: 0.9rem;
+    font-weight: 700;
+    padding: 0.55rem 1.35rem;
+    min-height: 2.75rem;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 45, 146, 0.5);
+    background: linear-gradient(135deg, rgba(255, 45, 146, 0.35), rgba(139, 92, 255, 0.28));
+    color: var(--text);
+    cursor: pointer;
+    box-shadow: 0 4px 18px rgba(255, 45, 146, 0.15);
+  }
+  .filter-bar .filter-form button[type="submit"]:hover {
+    filter: brightness(1.08);
+  }
+  .filter-bar .filter-form .filter-clear {
+    color: var(--neon-violet);
+    font-weight: 700;
+    text-decoration: none;
+    font-size: 0.88rem;
+    padding: 0.5rem 0.75rem;
+  }
+  .filter-bar .filter-form .filter-clear:hover { text-decoration: underline; }
+  .filter-bar .filter-date-panel {
+    margin-top: 0.85rem;
+    padding: 0.65rem 0.75rem 0.75rem;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(0, 0, 0, 0.28);
+    width: fit-content;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .filter-bar .filter-date-panel[hidden] {
+    display: none !important;
+  }
+  .filter-bar .filter-calendar-inner {
+    transform: scale(0.82);
+    transform-origin: top left;
+    margin-bottom: -2.2rem;
+    margin-right: -3rem;
+  }
+  .filter-bar .flatpickr-calendar {
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: #12101c;
+  }
+  .filter-bar .flatpickr-day.selected,
+  .filter-bar .flatpickr-day.startRange,
+  .filter-bar .flatpickr-day.endRange {
+    background: linear-gradient(135deg, #ff2d92, #8b5cff);
+    border-color: transparent;
+  }
+  .filter-bar .flatpickr-day.inRange {
+    background: rgba(139, 92, 255, 0.28);
+    border-color: transparent;
+    box-shadow: none;
+  }
+  .filter-bar .flatpickr-months .flatpickr-month {
+    background: transparent;
+  }
+  .filter-bar .flatpickr-current-month .flatpickr-monthDropdown-months,
+  .filter-bar .flatpickr-current-month input.cur-year {
+    font-weight: 600;
+  }
+</style>
+<section class="filter-bar filter-panel-wrap" id="main-filters-panel" aria-label="Филтри">
+  <form method="get" action="{{ filter_action }}" class="filter-form" id="date-filter-form">
+    <div class="filter-panel-inner">
+      <h2 class="filter-title">Филтри</h2>
+      <div class="filter-controls-row">
+        <div class="filter-field" style="grid-column: 1 / -1;">
+          <label for="filter-q">Пребарување</label>
+          <input type="search" name="q" id="filter-q" value="{{ search_q|default('') }}" placeholder="Корисник (на пр. cabaret) или изведувач…" maxlength="120" autocomplete="off" enterkeyhint="search">
+        </div>
+        <div class="filter-field">
+          <span class="filter-label-text">Цена</span>
+          <label class="filter-checkbox">
+            <input type="checkbox" name="has_price" value="1" {% if has_price == '1' %}checked{% endif %}>
+            Со цена на билет
+          </label>
+        </div>
+        <div class="filter-field">
+          <label for="filter-dow">Ден во неделата</label>
+          <select name="dow" id="filter-dow">
+            <option value="" {% if not dow %}selected{% endif %}>Сите денови</option>
+            <option value="monday" {% if dow == 'monday' %}selected{% endif %}>Понеделник</option>
+            <option value="tuesday" {% if dow == 'tuesday' %}selected{% endif %}>Вторник</option>
+            <option value="wednesday" {% if dow == 'wednesday' %}selected{% endif %}>Среда</option>
+            <option value="thursday" {% if dow == 'thursday' %}selected{% endif %}>Четврток</option>
+            <option value="friday" {% if dow == 'friday' %}selected{% endif %}>Петок</option>
+            <option value="saturday" {% if dow == 'saturday' %}selected{% endif %}>Сабота</option>
+            <option value="sunday" {% if dow == 'sunday' %}selected{% endif %}>Недела</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label for="filter-role">Изведувач</label>
+          <select name="role" id="filter-role">
+            <option value="" {% if not role %}selected{% endif %}>Сите типови</option>
+            <option value="dj" {% if role == 'dj' %}selected{% endif %}>DJ</option>
+            <option value="singer" {% if role == 'singer' %}selected{% endif %}>Пејач / вокал</option>
+            <option value="live_band" {% if role == 'live_band' %}selected{% endif %}>Жива група / бенд</option>
+            <option value="artist" {% if role == 'artist' %}selected{% endif %}>Уметник / настап</option>
+            <option value="mc" {% if role == 'mc' %}selected{% endif %}>MC / водител</option>
+            <option value="unknown" {% if role == 'unknown' %}selected{% endif %}>Непознато / друго</option>
+          </select>
+        </div>
+      </div>
+      <div class="filter-toolbar">
+        <button type="button" class="filter-chip" id="filter-date-toggle" aria-expanded="false" aria-controls="filter-date-panel">
+          <span>📅 Датум на настан</span>
+          <span class="filter-chip-value{% if date_from and date_to %} has-range{% endif %}" id="filter-date-summary">{% if date_from and date_to %}{{ date_from }} → {{ date_to }}{% endif %}</span>
+        </button>
+        <span class="filter-toolbar-spacer"></span>
+        <button type="submit">Прикажи</button>
+        {% if filter_active %}
+        <a class="filter-clear" href="{{ filter_clear }}">Исчисти</a>
+        {% endif %}
+      </div>
+      <div id="filter-date-panel" class="filter-date-panel" hidden>
+        <div class="filter-calendar-inner">
+          <div id="filter-date-range"></div>
+        </div>
+      </div>
+      <input type="hidden" name="date_from" id="filter-date-from" value="{{ date_from or '' }}">
+      <input type="hidden" name="date_to" id="filter-date-to" value="{{ date_to or '' }}">
+    </div>
+  </form>
+</section>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
+<script>
+(function () {
+  var fromEl = document.getElementById('filter-date-from');
+  var toEl = document.getElementById('filter-date-to');
+  var el = document.getElementById('filter-date-range');
+  var form = document.getElementById('date-filter-form');
+  var panel = document.getElementById('filter-date-panel');
+  var toggle = document.getElementById('filter-date-toggle');
+  var summary = document.getElementById('filter-date-summary');
+  if (!el || !fromEl || !toEl || !form || !panel || !toggle || typeof flatpickr === 'undefined') return;
+
+  var df = (fromEl.value || '').trim();
+  var dt = (toEl.value || '').trim();
+  if (df && !dt) dt = df;
+  if (!df && dt) df = dt;
+  var defaultDates = null;
+  if (df && dt) defaultDates = [df, dt];
+
+  var fpInstance = null;
+  function syncSummary() {
+    var a = (fromEl.value || '').trim();
+    var b = (toEl.value || '').trim();
+    if (!summary) return;
+    if (a && b) {
+      summary.textContent = a + ' → ' + b;
+      summary.classList.add('has-range');
+    } else {
+      summary.textContent = '';
+      summary.classList.remove('has-range');
+    }
+  }
+
+  function ensureFp() {
+    if (fpInstance) return fpInstance;
+    fpInstance = flatpickr(el, {
+      mode: 'range',
+      inline: true,
+      dateFormat: 'Y-m-d',
+      locale: { firstDayOfWeek: 1 },
+      defaultDate: defaultDates,
+      onChange: function (selectedDates, dateStr, instance) {
+        if (selectedDates.length !== 2) return;
+        fromEl.value = instance.formatDate(selectedDates[0], 'Y-m-d');
+        toEl.value = instance.formatDate(selectedDates[1], 'Y-m-d');
+        syncSummary();
+        form.submit();
+      }
+    });
+    return fpInstance;
+  }
+
+  toggle.addEventListener('click', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    var open = panel.hasAttribute('hidden');
+    if (open) {
+      panel.removeAttribute('hidden');
+      toggle.setAttribute('aria-expanded', 'true');
+      var fp = ensureFp();
+      requestAnimationFrame(function () {
+        try { fp.redraw(); } catch (err) {}
+      });
+    } else {
+      panel.setAttribute('hidden', '');
+      toggle.setAttribute('aria-expanded', 'false');
+    }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !panel.hasAttribute('hidden')) {
+      panel.setAttribute('hidden', '');
+      toggle.setAttribute('aria-expanded', 'false');
+    }
+  });
+
+  document.addEventListener('click', function (e) {
+    if (panel.hasAttribute('hidden')) return;
+    var t = e.target;
+    if (panel.contains(t) || toggle.contains(t)) return;
+    panel.setAttribute('hidden', '');
+    toggle.setAttribute('aria-expanded', 'false');
+  });
+})();
+</script>

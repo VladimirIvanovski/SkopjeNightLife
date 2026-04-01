@@ -1,0 +1,49 @@
+<script>
+(function () {
+  var SEL = '.event-countdown[data-target]';
+  /** Skip zero units (e.g. 2d 30s, 5h 12m) — easier to scan than 00:00:00:00. */
+  function formatRemaining(ms) {
+    var sec = Math.max(0, Math.floor(ms / 1000));
+    var d = Math.floor(sec / 86400);
+    sec %= 86400;
+    var h = Math.floor(sec / 3600);
+    sec %= 3600;
+    var m = Math.floor(sec / 60);
+    var s = sec % 60;
+    var parts = [];
+    if (d > 0) parts.push(d + 'd');
+    if (h > 0) parts.push(h + 'h');
+    if (m > 0) parts.push(m + 'm');
+    if (s > 0) parts.push(s + 's');
+    if (!parts.length) return '0s';
+    return parts.join(' ');
+  }
+  function bucket(sec) {
+    if (sec < 86400) return 'countdown--red';
+    if (sec <= 3 * 86400) return 'countdown--yellow';
+    return 'countdown--green';
+  }
+  function tick() {
+    var nodes = document.querySelectorAll(SEL);
+    var now = Date.now();
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      var iso = el.getAttribute('data-target');
+      if (!iso) continue;
+      var t = Date.parse(iso);
+      if (isNaN(t)) continue;
+      var ms = t - now;
+      if (ms <= 0) {
+        el.textContent = 'Поминат';
+        el.className = 'event-countdown countdown--red';
+        el.removeAttribute('data-target');
+        continue;
+      }
+      el.textContent = formatRemaining(ms);
+      el.className = 'event-countdown ' + bucket(ms / 1000);
+    }
+  }
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>

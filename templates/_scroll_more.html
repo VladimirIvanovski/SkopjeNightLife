@@ -1,0 +1,44 @@
+<script>
+(function () {
+  var grid = document.getElementById('events-grid');
+  var sentinel = document.getElementById('scroll-sentinel');
+  if (!grid || !sentinel) return;
+  var main = document.querySelector('main[data-feed-user]');
+  var user = main ? (main.getAttribute('data-feed-user') || '') : '';
+  var hasMore = {{ has_more|tojson }};
+  var offset = {{ entries|length }};
+  var loading = false;
+
+  function loadMore() {
+    if (!hasMore || loading) return;
+    loading = true;
+    sentinel.textContent = 'Вчитување…';
+    var params = new URLSearchParams(window.location.search);
+    params.set('offset', String(offset));
+    params.set('limit', String({{ page_size|default(8) }}));
+    if (user) params.set('user', user); else params.delete('user');
+    fetch('/api/events?' + params.toString(), { headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.html) grid.insertAdjacentHTML('beforeend', data.html);
+        hasMore = !!data.has_more;
+        if (typeof data.next_offset === 'number') offset = data.next_offset;
+        else offset += {{ page_size|default(8) }};
+        sentinel.textContent = hasMore ? 'Скролувај за повеќе' : '';
+        if (!hasMore) sentinel.style.opacity = '0.5';
+        loading = false;
+      })
+      .catch(function () {
+        sentinel.textContent = 'Грешка — обиди се повторно';
+        loading = false;
+      });
+  }
+
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (entries) {
+      if (entries[0] && entries[0].isIntersecting) loadMore();
+    }, { rootMargin: '120px' });
+    io.observe(sentinel);
+  }
+})();
+</script>

@@ -1,0 +1,57 @@
+    .top.site-header {
+      display: flex;
+      justify-content: center;
+      padding-left: 1rem;
+      padding-right: 1rem;
+    }
+    .site-header-inner {
+      max-width: 1120px;
+      width: 100%;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem 1.5rem;
+    }
+    .site-header-inner .brand {
+      align-items: flex-start;
+      text-align: left;
+    }
+    .site-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.65rem 1rem;
+      align-items: center;
+      justify-content: flex-end;
+    }
+    .site-nav a {
+      font-size: 1.08rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: var(--muted);
+      text-decoration: none;
+      padding: 0.72rem 1.35rem;
+      min-height: 3rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 14px;
+      transition: color 0.15s, background 0.15s, transform 0.12s;
+    }
+    .site-nav a:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.06);
+    }
+    .site-nav a.is-active {
+      color: var(--neon-pink);
+      background: rgba(255, 45, 146, 0.12);
+    }
+    @media (max-width: 640px) {
+      .site-header-inner {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .site-nav {
+        justify-content: center;
+      }
+    }

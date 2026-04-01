@@ -1,0 +1,15 @@
+{# Set nav before include: events | weekend | contact #}
+<header class="top site-header">
+  <div class="site-header-inner">
+    <a class="brand" href="{{ url_for('index') }}">
+      <strong>NightLife Skopje</strong>
+      <span>Откриј ноќни настани</span>
+    </a>
+    <nav class="site-nav" aria-label="Главна навигација">
+      <a href="{{ url_for('index') }}" class="{% if nav == 'events' %}is-active{% endif %}">Евенти</a>
+      <a href="{{ url_for('weekend_surprise') }}" class="{% if nav == 'weekend' %}is-active{% endif %}">Изненади ме!</a>
+      <a href="{{ url_for('suggest_account') }}" class="{% if nav == 'suggest' %}is-active{% endif %}">Предложи профил</a>
+      <a href="{{ url_for('contact') }}" class="{% if nav == 'contact' %}is-active{% endif %}">Контакт</a>
+    </nav>
+  </div>
+</header>

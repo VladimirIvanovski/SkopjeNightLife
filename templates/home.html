@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="mk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NightLife Skopje — откриј ја ноќта</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/themes/dark.css">
+  <style>
+{% include '_page_skin.html' %}
+{% include '_nav_styles.html' %}
+  </style>
+</head>
+<body>
+  {% set nav = 'events' %}
+  {% include '_site_header.html' %}
+
+  <main data-feed-user="">
+    {% set filter_action = url_for('index') %}
+    {% set filter_clear = url_for('index') %}
+    {% include '_date_range_filter.html' %}
+    {% if total_events == 0 %}
+    <p class="empty-state">
+      {% if filter_active and has_accounts %}
+      Нема настани за овие филтри. <a href="{{ url_for('index') }}">Исчисти филтер</a>
+      {% else %}
+      Нема податоци. Пушти <code>back-end/scraping/scrape_rapidapi_cloudinary.py</code> и <code>analyze_captions_gemini.py</code> — <code>back-end/data/cloudinary_catalog.json</code>.
+      {% endif %}
+    </p>
+    {% else %}
+    <div class="grid" id="events-grid">
+      {% for entry in entries %}
+      {% include '_event_card.html' %}
+      {% endfor %}
+    </div>
+    <p class="scroll-sentinel" id="scroll-sentinel" role="status">{% if has_more %}Скролувај за повеќе{% endif %}</p>
+    {% include '_scroll_more.html' %}
+    {% endif %}
+  </main>
+  {% include '_event_countdown_script.html' %}
+</body>
+</html>

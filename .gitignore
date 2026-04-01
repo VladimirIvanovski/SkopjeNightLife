@@ -1,0 +1,10 @@
+﻿.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.env
+back-end/database-adding-content/.env
+back-end/data/nightlife_catalog.db
+back-end/data/*.lock
+.cursor/
+.idea/

@@ -1,0 +1,25 @@
+{% if analysis and (analysis.event_day or analysis.event_start_time or analysis.location or analysis.artist_name or analysis.music_name or analysis.reservation_number) %}
+<div class="caption-analysis" aria-label="AI извлечени детали">
+  <div class="caption-analysis-title">Детали од објавата</div>
+  <ul class="caption-analysis-list">
+    {% if analysis.event_day %}
+    <li><span>Ден</span> {{ analysis.event_day }}</li>
+    {% endif %}
+    {% if analysis.event_start_time %}
+    <li><span>Почеток</span> {{ analysis.event_start_time }}</li>
+    {% endif %}
+    {% if analysis.location %}
+    <li><span>Локација</span> {{ analysis.location }}</li>
+    {% endif %}
+    {% if analysis.artist_name %}
+    <li><span>Артист / DJ</span> {{ analysis.artist_name }}</li>
+    {% endif %}
+    {% if analysis.music_name %}
+    <li><span>Музика</span> {{ analysis.music_name }}</li>
+    {% endif %}
+    {% if analysis.reservation_number %}
+    <li><span>Резервации</span> {{ analysis.reservation_number }}</li>
+    {% endif %}
+  </ul>
+</div>
+{% endif %}

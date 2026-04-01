@@ -1,0 +1,43 @@
+{
+  "examples": [
+    {
+      "description": "Nightlife / club post — shown on the website",
+      "caption_analysis": {
+        "schema_version": 2,
+        "ticket_price_mkd": null,
+        "ticket_price_raw": null,
+        "performers": [
+          {"name": "DJ Ficho", "role": "dj"},
+          {"name": "DJ Guardian", "role": "dj"}
+        ],
+        "day_of_week": "saturday",
+        "event_date": "2026-03-28",
+        "start_time": "00:00",
+        "end_time": null,
+        "reservations_phone": "071317338",
+        "reservations_has_info": true,
+        "location": "PURE Club, Градски парк, Skopje",
+        "listing_type": "nightlife_event",
+        "not_nightlife_label": null
+      }
+    },
+    {
+      "description": "Not a venue night-out — hidden on the website (listing_type not_nightlife)",
+      "caption_analysis": {
+        "schema_version": 2,
+        "ticket_price_mkd": null,
+        "ticket_price_raw": null,
+        "performers": [],
+        "day_of_week": null,
+        "event_date": null,
+        "start_time": null,
+        "end_time": null,
+        "reservations_phone": null,
+        "reservations_has_info": null,
+        "location": null,
+        "listing_type": "not_nightlife",
+        "not_nightlife_label": "food_menu"
+      }
+    }
+  ]
+}

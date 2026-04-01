@@ -1,0 +1,226 @@
+    :root {
+      --bg: #07050d;
+      --surface: #12101c;
+      --line: rgba(255, 255, 255, 0.08);
+      --text: #f4f0fa;
+      --muted: #8f879e;
+      --neon-pink: #ff2d92;
+      --neon-violet: #8b5cff;
+      --badge-bg: rgba(0, 0, 0, 0.55);
+      --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-display: "Outfit", var(--font-ui);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: var(--font-ui);
+      -webkit-font-smoothing: antialiased;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+      min-height: 100vh;
+      background-image:
+        radial-gradient(ellipse 100% 60% at 50% -15%, rgba(255, 45, 146, 0.18), transparent 55%),
+        radial-gradient(ellipse 50% 40% at 100% 30%, rgba(139, 92, 255, 0.12), transparent),
+        radial-gradient(ellipse 40% 35% at 0% 70%, rgba(139, 92, 255, 0.08), transparent);
+    }
+    .top {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      padding: 0.85rem 1.15rem;
+      background: rgba(7, 5, 13, 0.82);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: center;
+    }
+    .brand {
+      text-decoration: none;
+      color: inherit;
+      display: flex;
+      flex-direction: column;
+      gap: 0.1rem;
+      align-items: center;
+      text-align: center;
+    }
+    .brand strong {
+      font-family: var(--font-display);
+      font-size: 1.35rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      background: linear-gradient(110deg, #fff 0%, var(--neon-pink) 45%, var(--neon-violet) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .brand span {
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      color: var(--muted);
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 1.5rem 1rem 3rem;
+    }
+    .event-user-line {
+      padding: 0.45rem 0.65rem 0;
+      font-size: 0.72rem;
+      font-weight: 600;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      background: rgba(0, 0, 0, 0.2);
+    }
+    .event-user-line a {
+      color: var(--neon-pink);
+      text-decoration: none;
+    }
+    .event-user-line a:hover { text-decoration: underline; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 1.25rem;
+    }
+    .item {
+      background: var(--surface);
+      border-radius: 16px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+      transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+    }
+    .item:hover {
+      transform: translateY(-3px);
+      border-color: rgba(255, 45, 146, 0.35);
+      box-shadow: 0 16px 48px rgba(139, 92, 255, 0.12), 0 0 0 1px rgba(255, 45, 146, 0.12);
+    }
+    .media-wrap {
+      position: relative;
+      background: #000;
+    }
+    .media-wrap img, .media-wrap video {
+      width: 100%;
+      aspect-ratio: 4/5;
+      object-fit: cover;
+      display: block;
+    }
+    .posted-badge,
+    .event-countdown {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 2;
+      max-width: min(92%, 16rem);
+      padding: 0.45rem 0.72rem;
+      font-family: var(--font-ui);
+      font-size: 0.8125rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: none;
+      line-height: 1.35;
+      text-align: right;
+      color: rgba(255, 255, 255, 0.96);
+      background: var(--badge-bg);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow: 0 2px 14px rgba(0, 0, 0, 0.4);
+    }
+    .event-countdown {
+      font-variant-numeric: tabular-nums;
+    }
+    .event-countdown.countdown--green {
+      color: #9ef5c5;
+      border-color: rgba(125, 255, 179, 0.38);
+    }
+    .event-countdown.countdown--yellow {
+      color: #ffe08a;
+      border-color: rgba(255, 208, 120, 0.45);
+    }
+    .event-countdown.countdown--red {
+      color: #ffb0bf;
+      border-color: rgba(255, 120, 150, 0.42);
+    }
+    .gemini-head {
+      font-family: var(--font-ui);
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: rgba(255, 255, 255, 0.42);
+      margin: 0 0 0.5rem;
+      padding-bottom: 0.4rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    }
+    .gemini-info {
+      margin: 0;
+      padding: 0.65rem 0.75rem 0.75rem;
+      font-family: var(--font-ui);
+      font-size: 0.8125rem;
+      line-height: 1.55;
+      color: #d4cce8;
+      background: linear-gradient(165deg, rgba(139, 92, 255, 0.14) 0%, rgba(255, 45, 146, 0.06) 100%);
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .gemini-info div { margin: 0.32rem 0; }
+    .gemini-info strong { color: #fff; font-weight: 700; }
+    .gemini-info a { color: #b8a6ff; text-decoration: none; font-weight: 600; }
+    .gemini-info a:hover { color: #fff; text-decoration: underline; }
+    .gemini-info .role { color: #9a90b8; font-size: 0.9em; font-weight: 500; }
+    .empty-state {
+      text-align: center;
+      padding: 3rem 1.5rem;
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: 16px;
+      margin-top: 1rem;
+    }
+    .empty-state a { color: var(--neon-violet); font-weight: 600; }
+    .empty-state a:hover { text-decoration: underline; }
+    .empty-state code { color: var(--text); font-size: 0.85em; }
+    .scroll-sentinel {
+      text-align: center;
+      padding: 1.5rem 1rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .ig-action {
+      padding: 0.45rem 0.75rem 0.65rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      background: transparent;
+    }
+    .btn-ig {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      width: 100%;
+      padding: 0.42rem 0.35rem;
+      font-family: var(--font-ui);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      letter-spacing: 0.01em;
+      text-decoration: none;
+      text-align: center;
+      color: #a8a0bc;
+      border-radius: 8px;
+      border: none;
+      background: transparent;
+      transition: color 0.18s, background 0.18s;
+    }
+    .btn-ig .ig-icon {
+      flex-shrink: 0;
+      color: #e1306c;
+      opacity: 0.95;
+    }
+    .btn-ig:hover {
+      color: #f0eef6;
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .btn-ig:hover .ig-icon {
+      color: #f58529;
+    }

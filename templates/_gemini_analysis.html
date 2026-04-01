@@ -1,0 +1,82 @@
+{# Expects `post`. Renders Gemini caption_analysis with emojis (skips not_nightlife). #}
+{% set ca = post.caption_analysis %}
+{% if ca is mapping and ca.get('listing_type') != 'not_nightlife' %}
+{% set perf = ca.get('performers') or [] %}
+{% set has_info =
+  (ca.get('ticket_price_mkd') is not none) or
+  ca.get('ticket_price_raw') or
+  (perf | length > 0) or
+  ca.get('artist_name') or
+  ca.get('day_of_week') or ca.get('event_day') or
+  ca.get('event_date') or
+  ca.get('start_time') or ca.get('event_start_time') or
+  ca.get('end_time') or
+  ca.get('reservations_phone') or ca.get('reservations_has_info') or ca.get('reservation_number') or
+  ca.get('location') or
+  (ca.get('music_name') and perf | length == 0) or
+  (ca.get('listing_type') == 'nightlife_event')
+%}
+{% if has_info %}
+<div class="gemini-info" aria-label="AI извлечени детали">
+  <div class="gemini-head">✨ Од описот</div>
+  {% if ca.get('ticket_price_mkd') is not none %}
+  <div>🎟️ <strong>Цена:</strong> {{ ca.ticket_price_mkd }} ден</div>
+  {% elif ca.get('ticket_price_raw') %}
+  <div>🎟️ <strong>Цена:</strong> {{ ca.ticket_price_raw }}</div>
+  {% endif %}
+
+  {% if perf | length > 0 %}
+  <div>🎵 <strong>Изведувачи:</strong>
+    {% for p in perf %}
+      {% set nm = p.name | default('') %}
+      {% set role = p.role | default('') %}
+      {% if role == 'dj' %}🎧{% elif role == 'singer' %}🎤{% elif role == 'live_band' %}🎸{% elif role == 'mc' %}🎙️{% elif role == 'artist' %}⭐{% else %}🎶{% endif %}
+      {{ nm }}{% if role and role != 'unknown' %} <span class="role">({{ role }})</span>{% endif %}{% if not loop.last %} · {% endif %}
+    {% endfor %}
+  </div>
+  {% elif ca.get('artist_name') %}
+  <div>🎵 <strong>Изведувачи:</strong> {{ ca.artist_name }}</div>
+  {% endif %}
+
+  {% if ca.get('day_of_week') %}
+  <div>📆 <strong>Ден:</strong> {{ ca.day_of_week | title }}</div>
+  {% elif ca.get('event_day') %}
+  <div>📆 <strong>Ден:</strong> {{ ca.event_day }}</div>
+  {% endif %}
+
+  {% if ca.get('event_date') %}
+  <div>📅 <strong>Датум:</strong> <span title="ISO YYYY-MM-DD: година-месец-ден (на пр. 04 = април)">{{ ca.event_date | event_date_mk }}</span></div>
+  {% endif %}
+
+  {% if ca.get('start_time') %}
+  <div>🕐 <strong>Почеток:</strong> {{ ca.start_time }}</div>
+  {% elif ca.get('event_start_time') %}
+  <div>🕐 <strong>Почеток:</strong> {{ ca.event_start_time }}</div>
+  {% endif %}
+
+  {% if ca.get('end_time') %}
+  <div>🏁 <strong>Крај:</strong> {{ ca.end_time }}</div>
+  {% endif %}
+
+  {% if ca.get('reservations_phone') %}
+  <div>📞 <strong>Резервации:</strong> <a href="tel:{{ ca.reservations_phone | replace(' ', '') | replace('-', '') }}">{{ ca.reservations_phone }}</a></div>
+  {% elif ca.get('reservations_has_info') %}
+  <div>📞 <strong>Резервации:</strong> ✉️ наведени во описот</div>
+  {% elif ca.get('reservation_number') %}
+  <div>📞 <strong>Резервации:</strong> {{ ca.reservation_number }}</div>
+  {% endif %}
+
+  {% if ca.get('location') %}
+  <div>📍 <strong>Локација:</strong> {{ ca.location }}</div>
+  {% endif %}
+
+  {% if ca.get('music_name') and perf | length == 0 %}
+  <div>🎶 <strong>Музика:</strong> {{ ca.music_name }}</div>
+  {% endif %}
+
+  {% if ca.get('listing_type') == 'nightlife_event' %}
+  <div>🪩 <strong>Тип:</strong> настан / ноќен клуб</div>
+  {% endif %}
+</div>
+{% endif %}
+{% endif %}
