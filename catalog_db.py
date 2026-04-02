@@ -20,15 +20,27 @@ from pathlib import Path
 from typing import Any
 
 import psycopg
+from dotenv import load_dotenv
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 ROOT = Path(__file__).resolve().parent
+load_dotenv(ROOT / ".env")
+load_dotenv(ROOT / "back-end" / "database-adding-content" / ".env")
+
 CATALOG_JSON_PATH = ROOT / "back-end" / "data" / "cloudinary_catalog.json"
 SCRAPE_USERNAMES_PATH = ROOT / "back-end" / "data" / "scrape_usernames.txt"
 
-# Railway Postgres: set DATABASE_URL (postgres://...).
-DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+# Railway: private URL is DATABASE_URL; public (for local) is often DATABASE_PUBLIC_URL.
+def _database_url_from_env() -> str:
+    for key in ("DATABASE_URL", "DATABASE_PUBLIC_URL"):
+        v = os.environ.get(key, "").strip()
+        if v:
+            return v
+    return ""
+
+
+DATABASE_URL = _database_url_from_env()
 
 # Suggest rules:
 # - max 2 suggestions per 12 hours per IP hash
@@ -204,7 +216,9 @@ def _ticket_and_listing(post: dict) -> tuple[float | None, str | None]:
 
 def get_connection():
     if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is not set (Railway Postgres).")
+        raise RuntimeError(
+            "No Postgres URL: set DATABASE_URL or DATABASE_PUBLIC_URL (e.g. in .env)."
+        )
     conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
     init_schema(conn)
     return conn
@@ -381,6 +395,96 @@ def _parse_block_created_at(raw: str | None) -> datetime | None:
         return dt
     except ValueError:
         return None
+
+
+# Queued forever = worker down / never started.
+# "running" with very old updated_at = worker crashed after claim (updated_at not heartbeated).
+_STALE_QUEUED_MINUTES = 120
+_STALE_RUNNING_HOURS = 6
+_STALE_FAIL_MSG = "Обработката траеше предолго. Обиди се повторно."
+
+
+def suggest_repair_stale_jobs() -> int:
+    """Fail stale queued jobs; clear zombie running jobs (worker crash)."""
+    now = datetime.now(timezone.utc)
+    cutoff_q = now - timedelta(minutes=_STALE_QUEUED_MINUTES)
+    cutoff_run = now - timedelta(hours=_STALE_RUNNING_HOURS)
+    n = 0
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            """
+            UPDATE suggest_jobs
+            SET status = 'done', ok = false, message = %s, updated_at = %s
+            WHERE status = 'queued' AND created_at < %s
+            """,
+            (_STALE_FAIL_MSG, now, cutoff_q),
+        )
+        n += cur.rowcount if cur.rowcount is not None else 0
+        cur = conn.execute(
+            """
+            UPDATE suggest_jobs
+            SET status = 'done', ok = false, message = %s, updated_at = %s
+            WHERE status = 'running' AND updated_at < %s
+            """,
+            (_STALE_FAIL_MSG, now, cutoff_run),
+        )
+        n += cur.rowcount if cur.rowcount is not None else 0
+        conn.commit()
+    return n
+
+
+def clear_all_suggest_jobs() -> int:
+    """DELETE all rows from suggest_jobs (admin / local debug). Returns deleted count."""
+    with closing(get_connection()) as conn:
+        cur = conn.execute("DELETE FROM suggest_jobs")
+        conn.commit()
+        n = cur.rowcount if cur.rowcount is not None else 0
+    return n
+
+
+def suggest_jobs_open_summary() -> str:
+    """Short line for worker logs: queued vs running counts (running jobs are not re-claimed)."""
+    with closing(get_connection()) as conn:
+        qrow = conn.execute(
+            "SELECT COUNT(*) AS c FROM suggest_jobs WHERE status = 'queued'"
+        ).fetchone()
+        rrow = conn.execute(
+            "SELECT COUNT(*) AS c FROM suggest_jobs WHERE status = 'running'"
+        ).fetchone()
+        nq = int(qrow["c"]) if qrow else 0
+        nr = int(rrow["c"]) if rrow else 0
+        rows = conn.execute(
+            """
+            SELECT id, username_raw
+            FROM suggest_jobs
+            WHERE status = 'running'
+            ORDER BY id ASC
+            LIMIT 8
+            """
+        ).fetchall()
+    parts = [f"queued={nq}", f"running={nr}"]
+    if rows:
+        bits = [f"{r['id']}:{(r['username_raw'] or '')[:20]}" for r in rows]
+        parts.append("running_jobs=" + ",".join(bits))
+    return " | ".join(parts)
+
+
+def suggest_get_active_job_for_ip(ip_hash: str) -> dict | None:
+    """Most recent queued/running job for this IP, or None."""
+    if not ip_hash:
+        return None
+    with closing(get_connection()) as conn:
+        r = conn.execute(
+            """
+            SELECT id, username_raw, ip_hash, status, ok, message, canonical_username, created_at, updated_at
+            FROM suggest_jobs
+            WHERE ip_hash = %s AND status IN ('queued', 'running')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (ip_hash,),
+        ).fetchone()
+        return dict(r) if r else None
 
 
 def suggest_has_pending_job(ip_hash: str) -> bool:
@@ -641,6 +745,16 @@ def user_blocks_from_db(
     return out
 
 
+def _profile_display_handle(prof: dict, username: str) -> str:
+    """Handle for @ label / instagram.com/{handle}/ — list or user-submitted name, else DB username."""
+    dh = prof.get("display_handle")
+    if dh is not None:
+        s = str(dh).strip().lstrip("@")
+        if s:
+            return s
+    return username
+
+
 def _username_clause(username: str | None) -> tuple[str, list[Any]]:
     if not username or not str(username).strip():
         return "", []
@@ -648,7 +762,7 @@ def _username_clause(username: str | None) -> tuple[str, list[Any]]:
 
 
 def _search_clause(search: str | None) -> tuple[str, list[Any]]:
-    """Substring match: username, profile full_name, or post JSON (performers / caption)."""
+    """Substring match: username (handles @…), profile name/handle, caption + AI JSON (опис)."""
     if not search or not str(search).strip():
         return "", []
     raw = " ".join(str(search).strip().split())
@@ -658,12 +772,19 @@ def _search_clause(search: str | None) -> tuple[str, list[Any]]:
         raw = raw.replace(ch, "")
     if not raw:
         return "", []
-    pat = f"%{raw.lower()}%"
+    low = raw.lower()
+    # Usernames in DB have no '@'; strip @ so "@club" matches club…
+    user_needle = low.replace("@", "").strip()
+    if not user_needle:
+        return "", []
+    pat_text = f"%{low}%"
+    pat_user = f"%{user_needle}%"
     return (
         " AND (LOWER(p.username) LIKE %s "
         "OR LOWER(COALESCE(a.profile_json->>'full_name', '')) LIKE %s "
+        "OR LOWER(COALESCE(a.profile_json->>'display_handle', '')) LIKE %s "
         "OR LOWER(p.post_json::text) LIKE %s)",
-        [pat, pat, pat],
+        [pat_user, pat_text, pat_text, pat_text],
     )
 
 
@@ -747,11 +868,16 @@ def fetch_flat_events_for_weekend_range(date_from: date, date_to: date) -> list[
             continue
         prof = r["profile_json"] if isinstance(r.get("profile_json"), dict) else json.loads(r["profile_json"] or "{}")
         un = r["username"]
-        display_name = prof.get("full_name") or un.replace(".", " ").title()
+        fn = prof.get("full_name")
+        profile_full_name = str(fn).strip() if fn else None
+        display_name = profile_full_name or un.replace(".", " ").title()
+        ig_handle = _profile_display_handle(prof, un)
         out.append(
             {
                 "username": un,
+                "instagram_handle": ig_handle,
                 "display_name": display_name,
+                "profile_full_name": profile_full_name,
                 "post": post,
                 "media": media,
             }
@@ -818,7 +944,7 @@ def fetch_flat_events_filtered(
     Flat list of visible posts with media.
     If filters_active: sort by event_date then price.
     Else: sort by Instagram posted_at (newest first).
-    Each entry: username, display_name, post, media (single picked image/video).
+    Each entry: username, instagram_handle, display_name, profile_full_name, post, media.
     """
     where_sql, args = _where_visible_and_filters(
         date_from, date_to, has_price, weekday, username, performer_role, search
@@ -846,11 +972,16 @@ def fetch_flat_events_filtered(
             continue
         prof = r["profile_json"] if isinstance(r.get("profile_json"), dict) else json.loads(r["profile_json"] or "{}")
         un = r["username"]
-        display_name = prof.get("full_name") or un.replace(".", " ").title()
+        fn = prof.get("full_name")
+        profile_full_name = str(fn).strip() if fn else None
+        display_name = profile_full_name or un.replace(".", " ").title()
+        ig_handle = _profile_display_handle(prof, un)
         out.append(
             {
                 "username": un,
+                "instagram_handle": ig_handle,
                 "display_name": display_name,
+                "profile_full_name": profile_full_name,
                 "post": post,
                 "media": media,
             }

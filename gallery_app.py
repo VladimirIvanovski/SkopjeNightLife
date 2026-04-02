@@ -29,16 +29,17 @@ from catalog_db import (
     fetch_flat_events_filtered,
     list_usernames,
     random_weekend_surprise_entries,
-    suggest_has_pending_job,
+    suggest_get_active_job_for_ip,
     suggest_job_create,
     suggest_job_get,
+    suggest_repair_stale_jobs,
     suggest_global_monthly_remaining,
     suggest_global_monthly_try_consume,
     suggest_log_submission,
     suggest_window_info,
     username_in_catalog,
 )
-from suggest_pipeline import client_ip_hash
+from suggest_pipeline import client_ip_hash, normalize_suggest_username_input
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(32)
@@ -398,36 +399,106 @@ def contact():
     return render_template("contact.html", nav="contact")
 
 
+def _suggest_common_template_kwargs(
+    *,
+    result,
+    form_username: str,
+    job_id,
+    csrf_token: str,
+    tries_used: int,
+    reset_at_iso: str,
+) -> dict:
+    return dict(
+        nav="suggest",
+        result=result,
+        form_username=form_username,
+        job_id=job_id,
+        csrf_token=csrf_token,
+        tries_used=tries_used,
+        tries_max=2,
+        reset_at_iso=reset_at_iso,
+        global_remaining=suggest_global_monthly_remaining(),
+    )
+
+
 @app.route("/suggest", methods=["GET", "POST"])
 def suggest_account():
     """User-submitted Instagram username is enqueued; worker processes scrape+Gemini."""
+    suggest_repair_stale_jobs()
+    ip_h = client_ip_hash(
+        request.remote_addr,
+        request.headers.get("X-Forwarded-For"),
+    )
+
     if request.method == "GET":
+        if not ip_h:
+            session.pop("suggest_job_id", None)
         tok = secrets.token_urlsafe(24)
         session["csrf_suggest"] = tok
-        used, reset_at = suggest_window_info(
-            client_ip_hash(request.remote_addr, request.headers.get("X-Forwarded-For"))
-        )
+        used, reset_at = suggest_window_info(ip_h)
+
+        active = suggest_get_active_job_for_ip(ip_h) if ip_h else None
+        if active:
+            session["suggest_job_id"] = int(active["id"])
+
+        jid = session.get("suggest_job_id")
+        if jid is not None and ip_h:
+            try:
+                jid_int = int(jid)
+            except (TypeError, ValueError):
+                session.pop("suggest_job_id", None)
+                jid_int = None
+            if jid_int is not None:
+                j = suggest_job_get(jid_int)
+                if not j or str(j.get("ip_hash") or "") != ip_h:
+                    session.pop("suggest_job_id", None)
+                elif j.get("status") == "done":
+                    session.pop("suggest_job_id", None)
+                    ok = bool(j.get("ok"))
+                    msg = (j.get("message") or "").strip()
+                    if ok:
+                        res = {"ok": True, "code": "added", "message": "Додадено."}
+                    else:
+                        res = {"ok": False, "code": "err", "message": msg or "Не успеа."}
+                    return render_template(
+                        "suggest.html",
+                        **_suggest_common_template_kwargs(
+                            result=res,
+                            form_username="",
+                            job_id=None,
+                            csrf_token=tok,
+                            tries_used=used,
+                            reset_at_iso=reset_at.isoformat() if reset_at else "",
+                        ),
+                    )
+                elif j.get("status") in ("queued", "running"):
+                    return render_template(
+                        "suggest.html",
+                        **_suggest_common_template_kwargs(
+                            result={"ok": True, "code": "pending", "message": ""},
+                            form_username="",
+                            job_id=jid_int,
+                            csrf_token=tok,
+                            tries_used=used,
+                            reset_at_iso=reset_at.isoformat() if reset_at else "",
+                        ),
+                    )
+
         return render_template(
             "suggest.html",
-            nav="suggest",
-            result=None,
-            form_username="",
-            job_id=None,
-            csrf_token=tok,
-            tries_used=used,
-            tries_max=2,
-            reset_at_iso=reset_at.isoformat() if reset_at else "",
-            global_remaining=suggest_global_monthly_remaining(),
+            **_suggest_common_template_kwargs(
+                result=None,
+                form_username="",
+                job_id=None,
+                csrf_token=tok,
+                tries_used=used,
+                reset_at_iso=reset_at.isoformat() if reset_at else "",
+            ),
         )
 
     raw = (request.form.get("username") or "").strip()
     hp = (request.form.get("website") or "").strip()
     tok = (request.form.get("csrf_token") or "").strip()
-
-    ip_h = client_ip_hash(
-        request.remote_addr,
-        request.headers.get("X-Forwarded-For"),
-    )
 
     def _render_err(msg: str):
         new_tok = secrets.token_urlsafe(24)
@@ -435,15 +506,14 @@ def suggest_account():
         used, reset_at = suggest_window_info(ip_h)
         return render_template(
             "suggest.html",
-            nav="suggest",
-            result={"ok": False, "code": "err", "message": msg},
-            form_username=raw,
-            job_id=None,
-            csrf_token=new_tok,
-            tries_used=used,
-            tries_max=2,
-            reset_at_iso=reset_at.isoformat() if reset_at else "",
-            global_remaining=suggest_global_monthly_remaining(),
+            **_suggest_common_template_kwargs(
+                result={"ok": False, "code": "err", "message": msg},
+                form_username=raw,
+                job_id=None,
+                csrf_token=new_tok,
+                tries_used=used,
+                reset_at_iso=reset_at.isoformat() if reset_at else "",
+            ),
         )
 
     if not ip_h:
@@ -453,10 +523,31 @@ def suggest_account():
     if not tok or tok != session.get("csrf_suggest"):
         return _render_err("Сесијата истече. Освежи ја страната и обиди се повторно.")
 
-    if suggest_has_pending_job(ip_h):
-        return _render_err("Веќе имаш барање во обработка.")
+    active = suggest_get_active_job_for_ip(ip_h)
+    if active:
+        session["suggest_job_id"] = int(active["id"])
+        raw_norm = normalize_suggest_username_input(raw)
+        active_norm = normalize_suggest_username_input(active.get("username_raw") or "")
+        if not raw_norm or raw_norm == active_norm:
+            new_tok = secrets.token_urlsafe(24)
+            session["csrf_suggest"] = new_tok
+            used, reset_at = suggest_window_info(ip_h)
+            return render_template(
+                "suggest.html",
+                **_suggest_common_template_kwargs(
+                    result={"ok": True, "code": "pending", "message": ""},
+                    form_username="",
+                    job_id=int(active["id"]),
+                    csrf_token=new_tok,
+                    tries_used=used,
+                    reset_at_iso=reset_at.isoformat() if reset_at else "",
+                ),
+            )
+        return _render_err(
+            "Веќе обработуваме друг предлог. Почекај 1–2 мин. или разгледај ги настаните на почетната страница — копчето подолу."
+        )
 
-    handle = raw.lstrip("@").strip()
+    handle = normalize_suggest_username_input(raw)
     if not handle:
         return _render_err("Внеси валидно корисничко име.")
 
@@ -510,21 +601,56 @@ def suggest_account():
 
     suggest_log_submission(ip_h)
     job_id = suggest_job_create(raw, ip_h)
+    session["suggest_job_id"] = int(job_id)
 
     new_tok = secrets.token_urlsafe(24)
     session["csrf_suggest"] = new_tok
     return render_template(
         "suggest.html",
-        nav="suggest",
-        result={"ok": True, "code": "pending", "message": "Pending"},
-        form_username="",
-        job_id=job_id,
-        csrf_token=new_tok,
-        tries_used=used + 1,
-        tries_max=2,
-        reset_at_iso=(reset_at.isoformat() if reset_at else (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()),
-        global_remaining=suggest_global_monthly_remaining(),
+        **_suggest_common_template_kwargs(
+            result={"ok": True, "code": "pending", "message": ""},
+            form_username="",
+            job_id=job_id,
+            csrf_token=new_tok,
+            tries_used=used + 1,
+            reset_at_iso=(
+                reset_at.isoformat()
+                if reset_at
+                else (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
+            ),
+        ),
     )
+
+
+def _suggest_job_authorized_for_request(job_id: int, j: dict) -> bool:
+    """IP hash match (strict) or same browser session owns this job (fixes X-Forwarded-For drift)."""
+    ip_h = client_ip_hash(
+        request.remote_addr,
+        request.headers.get("X-Forwarded-For"),
+    )
+    try:
+        sid_ok = int(session.get("suggest_job_id") or 0) == int(job_id)
+    except (TypeError, ValueError):
+        sid_ok = False
+    if not ip_h:
+        return sid_ok
+    if str(j.get("ip_hash") or "") == ip_h:
+        return True
+    return sid_ok
+
+
+@app.route("/api/suggest_ack/<int:job_id>", methods=["POST"])
+def suggest_ack(job_id: int):
+    """Clear session job id after client sees terminal state (same IP as job)."""
+    j = suggest_job_get(job_id)
+    if not j:
+        return jsonify({"ok": False}), 404
+    if not _suggest_job_authorized_for_request(job_id, j):
+        return jsonify({"ok": False}), 403
+    if j.get("status") != "done":
+        return jsonify({"ok": False, "not_done": True}), 400
+    session.pop("suggest_job_id", None)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/suggest_status/<int:job_id>")
@@ -532,6 +658,8 @@ def suggest_status(job_id: int):
     j = suggest_job_get(job_id)
     if not j:
         return jsonify({"ok": False, "status": "missing"}), 404
+    if not _suggest_job_authorized_for_request(job_id, j):
+        return jsonify({"ok": False, "status": "forbidden"}), 403
     used, reset_at = suggest_window_info(str(j.get("ip_hash") or ""))
     return jsonify(
         {

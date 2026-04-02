@@ -132,6 +132,16 @@
       font-size: 0.82rem;
       color: var(--muted);
     }
+    .suggest-wait-links {
+      margin: 0.5rem 0 0;
+      font-size: 0.9rem;
+    }
+    .suggest-wait-links a {
+      color: var(--neon-violet);
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .suggest-wait-links a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -148,7 +158,10 @@
       {% if code == 'exists' %}{% set cls = 'warn' %}{% endif %}
       {% if code == 'global_cap' %}{% set cls = 'warn' %}{% endif %}
       <div class="suggest-alert {{ cls }}" role="status" id="main-status">
-        {% if code == 'pending' %}Pending{% elif code == 'added' %}Додадено.{% elif code == 'exists' %}Веќе е додадено.{% elif code == 'cooldown' %}Пробај подоцна.{% elif code == 'global_cap' %}Лимитот за овој месец е достигнат. Прати на <a href="mailto:vladimir.ivanovski5@gmail.com" style="color:inherit;text-decoration:underline;">vladimir.ivanovski5@gmail.com</a>.{% else %}{{ result.message }}{% endif %}
+        {% if code == 'pending' %}
+        <strong>Барањето се обработува (обично 1–2 мин.)</strong>
+        <p class="suggest-wait-links"><a href="{{ url_for('index') }}">Разгледај ги моменталните настани</a> додека чекаш.</p>
+        {% elif code == 'added' %}Додадено.{% elif code == 'exists' %}Веќе е додадено.{% elif code == 'cooldown' %}Пробај подоцна.{% elif code == 'global_cap' %}Лимитот за овој месец е достигнат. Прати на <a href="mailto:vladimir.ivanovski5@gmail.com" style="color:inherit;text-decoration:underline;">vladimir.ivanovski5@gmail.com</a>.{% else %}{{ result.message }}{% endif %}
       </div>
       {% endif %}
       {% if job_id %}
@@ -177,7 +190,7 @@
           · следен обид за: <strong id="cooldown-timer">--:--:--</strong>
         </span>
       </div>
-      <p class="suggest-note">Максимум 2 предлози во 12 часа. Додека еден е Pending, не можеш да пратиш друг.</p>
+      <p class="suggest-note">Максимум 2 предлози во 12 часа. Додека еден предлог е во редица или се обработува, не можеш да испратиш друг за истата IP-адреса.</p>
       {% endif %}
       <script>
         (function () {
@@ -264,6 +277,11 @@
                     box.textContent = d.message || 'Не е настан.';
                     setProgress(100, 'Готово', '');
                   }
+                  fetch('/api/suggest_ack/' + jobId, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Accept': 'application/json' }
+                  }).catch(function () {});
                   return;
                 }
                 setTimeout(poll, 2500);

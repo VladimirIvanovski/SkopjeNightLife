@@ -473,6 +473,11 @@ def main() -> None:
             continue
 
         block = scrape_user_to_cloudinary(username, api_key)
+        prof = block.get("profile")
+        if isinstance(prof, dict):
+            prof = dict(prof)
+            prof["display_handle"] = username
+            block["profile"] = prof
         by_u[username] = {
             "profile": block["profile"],
             "posts": block["posts"],

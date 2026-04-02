@@ -2,7 +2,11 @@
 <article class="item">
   {% if not feed_mode|default(false) %}
   <div class="event-user-line">
-    <a href="{{ url_for('by_user', username=entry.username) }}{{ date_query_suffix }}">@{{ entry.username }}</a>
+    {% set ig = entry.instagram_handle | default(entry.username) %}
+    <a class="ig-at-handle" href="https://www.instagram.com/{{ ig }}/" target="_blank" rel="noopener noreferrer" title="Профил на Instagram">@{{ ig }}</a>
+    {% if entry.profile_full_name %}
+    <span class="event-profile-name" title="Име на профилот на Instagram">{{ entry.profile_full_name }}</span>
+    {% endif %}
   </div>
   {% endif %}
   <div class="media-wrap">

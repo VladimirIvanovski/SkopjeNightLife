@@ -7,17 +7,19 @@ This deletes:
 - suggest_submit_blocks row for that ip_hash (legacy)
 
 Usage (PowerShell):
-  $env:DATABASE_URL="...public postgres url..."
   python reset_suggest_ip.py 127.0.0.1
+
+DATABASE_URL is read from the environment or project-root .env (see catalog_db).
 """
 
 from __future__ import annotations
 
 import hashlib
-import os
 import sys
 
 import psycopg
+
+from catalog_db import DATABASE_URL
 
 
 def ip_hash(ip: str) -> str:
@@ -29,7 +31,7 @@ def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: python reset_suggest_ip.py <ip>", file=sys.stderr)
         sys.exit(2)
-    url = os.environ.get("DATABASE_URL", "").strip()
+    url = DATABASE_URL
     if not url:
         print("DATABASE_URL is not set", file=sys.stderr)
         sys.exit(2)

@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sys
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
 
@@ -28,6 +31,14 @@ def _ensure_import_paths() -> None:
         s = str(p)
         if s not in sys.path:
             sys.path.insert(0, s)
+
+
+def normalize_suggest_username_input(s: str) -> str:
+    """Strip leading @ (any number), NBSP; lowercase — IG handles are case-insensitive."""
+    t = (s or "").replace("\u00a0", " ").strip()
+    while t.startswith("@"):
+        t = t[1:].lstrip()
+    return t.lower().strip()
 
 
 def client_ip_hash(remote_addr: str | None, x_forwarded_for: str | None) -> str:
@@ -90,7 +101,7 @@ def process_user_suggestion(
         slugify_username,
     )
 
-    handle = slugify_username((raw_username or "").strip().lstrip("@"))
+    handle = slugify_username(normalize_suggest_username_input(raw_username))
     handle = handle.lower()
     if not handle:
         return {
@@ -127,9 +138,11 @@ def process_user_suggestion(
             "did_block": False,
         }
 
+    _log.debug("scrape start handle=%r", handle)
     try:
         block = scrape_user_to_cloudinary(handle, api_key)
     except Exception:
+        _log.exception("scrape failed handle=%r", handle)
         return {
             "ok": False,
             "message": (
@@ -141,7 +154,12 @@ def process_user_suggestion(
         }
 
     prof = block.get("profile") or {}
+    if not isinstance(prof, dict):
+        prof = {}
+    prof = dict(prof)
+    prof["display_handle"] = handle
     canonical = slugify_username(str(prof.get("username") or handle)).lower()
+    _log.debug("scrape ok canonical=%r (display_handle=%r)", canonical, handle)
 
     if username_in_catalog(canonical):
         return {
@@ -189,13 +207,16 @@ def process_user_suggestion(
         }
 
     try:
+        _log.debug("gemini run start filter=%r", canonical)
         gemini_run(
             CATALOG_PATH.resolve(),
             force=True,
             throttle_sec=0.25,
             username_filter=canonical,
         )
+        _log.debug("gemini run done filter=%r", canonical)
     except Exception:
+        _log.exception("gemini run failed filter=%r", canonical)
         _rollback_catalog_user()
         return {
             "ok": False,
@@ -241,10 +262,11 @@ def process_user_suggestion(
             }
 
     rows = load_scrape_rows(SCRAPE_USERNAMES_TXT)
-    if not any(r.username.lower() == canonical.lower() for r in rows):
-        rows.append(ScrapeRow(username=canonical))
+    if not any(r.username.lower() == handle.lower() for r in rows):
+        rows.append(ScrapeRow(username=handle))
         save_scrape_rows(SCRAPE_USERNAMES_TXT, rows)
 
+    _log.debug("sync_from_json after accept canonical=%r", canonical)
     sync_from_json()
 
     return {
