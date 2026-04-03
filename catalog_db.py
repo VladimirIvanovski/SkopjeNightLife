@@ -5,6 +5,13 @@ URL date filters use caption_analysis.event_date (AI), not Instagram posted_at.
 
 Sync from cloudinary_catalog.json:
   python catalog_db.py
+Recompute visible flags from existing post_json (e.g. Railway DB after rule change):
+  python catalog_db.py --refresh-visible
+Dump Postgres back into cloudinary_catalog.json (backup; avoids losing DB-only users on sync):
+  python catalog_db.py --export-json
+  python catalog_db.py --export-json path/to/backup.json
+Warning: plain ``sync_from_json`` TRUNCATES posts/accounts and reloads only from the JSON file.
+If that file omits a user (e.g. skopje_event_center only on Railway), that user disappears from the DB.
 Or: gallery_app can import JSON on first start when DB is empty.
 """
 
@@ -14,6 +21,7 @@ import json
 import random
 import re
 import os
+import time
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -21,6 +29,7 @@ from typing import Any
 
 import psycopg
 from dotenv import load_dotenv
+from psycopg.errors import DeadlockDetected
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -117,22 +126,60 @@ def init_schema(conn) -> None:
     conn.execute(SCHEMA)
 
 
-def post_visible_on_site(post: dict) -> bool:
-    if not (post.get("caption") or "").strip():
-        return False
+def _caption_analysis_dict(post: dict) -> dict | None:
+    """caption_analysis is normally a dict; some DB round-trips store it as a JSON string."""
     ca = post.get("caption_analysis")
-    if isinstance(ca, dict) and ca.get("listing_type") == "not_nightlife":
-        return False
-    return True
+    if isinstance(ca, dict):
+        return ca
+    if isinstance(ca, str) and ca.strip():
+        try:
+            parsed = json.loads(ca)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _listing_type_from_post(post: dict) -> str | None:
+    """Prefer caption_analysis.listing_type; some blobs may repeat listing_type at post root."""
+    ca = _caption_analysis_dict(post)
+    if isinstance(ca, dict):
+        lt = ca.get("listing_type")
+        if lt is not None and str(lt).strip():
+            return str(lt).strip().lower()
+    lt = post.get("listing_type")
+    if lt is not None and str(lt).strip():
+        return str(lt).strip().lower()
+    return None
+
+
+def post_visible_on_site(post: dict) -> bool:
+    """Feed: show only posts where Gemini classified listing_type as nightlife_event."""
+    return _listing_type_from_post(post) == "nightlife_event"
 
 
 def pick_media_for_post(post: dict) -> dict | None:
+    """First usable image URL for the card (secure_url or url); then video."""
+
+    def _url(m: dict) -> str:
+        return (m.get("secure_url") or m.get("url") or "").strip()
+
     for m in post.get("media") or []:
-        if m.get("secure_url") and m.get("resource_type") != "video":
-            return m
+        if not isinstance(m, dict):
+            continue
+        if _url(m) and m.get("resource_type") != "video":
+            out = dict(m)
+            if not out.get("secure_url"):
+                out["secure_url"] = _url(m)
+            return out
     for m in post.get("media") or []:
-        if m.get("secure_url"):
-            return m
+        if not isinstance(m, dict):
+            continue
+        if _url(m):
+            out = dict(m)
+            if not out.get("secure_url"):
+                out["secure_url"] = _url(m)
+            return out
     return None
 
 
@@ -155,7 +202,7 @@ def _posted_date_str(post: dict) -> str | None:
 
 def _event_date_range_from_post(post: dict) -> tuple[str | None, str | None]:
     """Gemini caption_analysis.event_date: YYYY-MM-DD or multiple in one string."""
-    ca = post.get("caption_analysis")
+    ca = _caption_analysis_dict(post)
     if not isinstance(ca, dict):
         return None, None
     raw = ca.get("event_date")
@@ -184,7 +231,7 @@ _VALID_ROLES = frozenset({"dj", "singer", "live_band", "artist", "mc", "unknown"
 
 def _performer_roles_json(post: dict) -> str | None:
     """JSON array of unique performer roles from caption_analysis."""
-    ca = post.get("caption_analysis")
+    ca = _caption_analysis_dict(post)
     if not isinstance(ca, dict):
         return None
     roles: list[str] = []
@@ -202,16 +249,14 @@ def _performer_roles_json(post: dict) -> str | None:
 
 
 def _ticket_and_listing(post: dict) -> tuple[float | None, str | None]:
-    ca = post.get("caption_analysis")
-    if not isinstance(ca, dict):
-        return None, None
+    ca = _caption_analysis_dict(post) or {}
     raw = ca.get("ticket_price_mkd")
     try:
         price = float(raw) if raw is not None else None
     except (TypeError, ValueError):
         price = None
-    lt = ca.get("listing_type")
-    return price, (str(lt) if lt is not None else None)
+    lt = _listing_type_from_post(post)
+    return price, (lt if lt is not None else None)
 
 
 def get_connection():
@@ -221,6 +266,8 @@ def get_connection():
         )
     conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
     init_schema(conn)
+    # End implicit txn from DDL so clients never stack BEGIN (avoids "transaction already in progress").
+    conn.commit()
     return conn
 
 
@@ -229,6 +276,91 @@ def load_catalog_json() -> dict:
         return {"by_username": {}}
     with open(CATALOG_JSON_PATH, encoding="utf-8") as f:
         return json.load(f)
+
+
+def upsert_post_row(conn, username: str, post: dict) -> None:
+    """INSERT or UPDATE one post row (same columns as sync_from_json)."""
+    if not isinstance(post, dict):
+        return
+    ts_dt = _post_ts(post)
+    posted_at = None if ts_dt.year <= 1 else ts_dt
+    pdate_s = _posted_date_str(post)
+    pdate = date.fromisoformat(pdate_s) if pdate_s else None
+    ev_start_s, ev_end_s = _event_date_range_from_post(post)
+    ev_start = date.fromisoformat(ev_start_s) if ev_start_s else None
+    ev_end = date.fromisoformat(ev_end_s) if ev_end_s else None
+    ticket, listing = _ticket_and_listing(post)
+    proles_s = _performer_roles_json(post)
+    proles = Jsonb(json.loads(proles_s)) if proles_s else None
+    vis = bool(post_visible_on_site(post))
+    conn.execute(
+        """INSERT INTO posts (username, post_index, post_json, posted_at, posted_date,
+           event_date, event_date_end, ticket_price_mkd, listing_type, performer_roles, visible)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+           ON CONFLICT (username, post_index) DO UPDATE SET
+             post_json = EXCLUDED.post_json,
+             posted_at = EXCLUDED.posted_at,
+             posted_date = EXCLUDED.posted_date,
+             event_date = EXCLUDED.event_date,
+             event_date_end = EXCLUDED.event_date_end,
+             ticket_price_mkd = EXCLUDED.ticket_price_mkd,
+             listing_type = EXCLUDED.listing_type,
+             performer_roles = EXCLUDED.performer_roles,
+             visible = EXCLUDED.visible
+           """,
+        (
+            username,
+            post.get("post_index"),
+            Jsonb(post),
+            posted_at,
+            pdate,
+            ev_start,
+            ev_end,
+            ticket,
+            listing,
+            proles,
+            vis,
+        ),
+    )
+
+
+def upsert_account_and_posts(username: str, profile: dict, posts: list[dict]) -> None:
+    """Merge one user into Postgres without truncating other accounts (suggest / DB-only ingest)."""
+    with closing(get_connection()) as conn:
+        conn.execute(
+            "INSERT INTO accounts (username, profile_json) VALUES (%s, %s) "
+            "ON CONFLICT (username) DO UPDATE SET profile_json = EXCLUDED.profile_json",
+            (username, Jsonb(profile)),
+        )
+        for post in posts or []:
+            upsert_post_row(conn, username, post)
+        conn.commit()
+
+
+def delete_account_and_posts(username: str) -> None:
+    """Remove one user and their posts (rollback failed suggest)."""
+    with closing(get_connection()) as conn:
+        conn.execute("DELETE FROM posts WHERE LOWER(username) = LOWER(%s)", (username,))
+        conn.execute("DELETE FROM accounts WHERE LOWER(username) = LOWER(%s)", (username,))
+        conn.commit()
+
+
+def fetch_posts_for_username(username: str) -> list[dict]:
+    """Post dicts from DB in post_index order (caption_analysis from Gemini may be present)."""
+    with closing(get_connection()) as conn:
+        rows = conn.execute(
+            "SELECT post_json FROM posts WHERE LOWER(username) = LOWER(%s) "
+            "ORDER BY post_index NULLS LAST",
+            (username,),
+        ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        pj = r["post_json"]
+        if isinstance(pj, str):
+            pj = json.loads(pj)
+        if isinstance(pj, dict):
+            out.append(pj)
+    return out
 
 
 def sync_from_json(catalog: dict | None = None) -> tuple[int, int]:
@@ -255,48 +387,112 @@ def sync_from_json(catalog: dict | None = None) -> tuple[int, int]:
             for post in block.get("posts") or []:
                 if not isinstance(post, dict):
                     continue
-                ts_dt = _post_ts(post)
-                posted_at = None if ts_dt.year <= 1 else ts_dt
-                pdate_s = _posted_date_str(post)
-                pdate = date.fromisoformat(pdate_s) if pdate_s else None
-                ev_start_s, ev_end_s = _event_date_range_from_post(post)
-                ev_start = date.fromisoformat(ev_start_s) if ev_start_s else None
-                ev_end = date.fromisoformat(ev_end_s) if ev_end_s else None
-                ticket, listing = _ticket_and_listing(post)
-                proles_s = _performer_roles_json(post)
-                proles = Jsonb(json.loads(proles_s)) if proles_s else None
-                vis = bool(post_visible_on_site(post))
-                conn.execute(
-                    """INSERT INTO posts (username, post_index, post_json, posted_at, posted_date,
-                       event_date, event_date_end, ticket_price_mkd, listing_type, performer_roles, visible)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                       ON CONFLICT (username, post_index) DO UPDATE SET
-                         post_json = EXCLUDED.post_json,
-                         posted_at = EXCLUDED.posted_at,
-                         posted_date = EXCLUDED.posted_date,
-                         event_date = EXCLUDED.event_date,
-                         event_date_end = EXCLUDED.event_date_end,
-                         ticket_price_mkd = EXCLUDED.ticket_price_mkd,
-                         listing_type = EXCLUDED.listing_type,
-                         performer_roles = EXCLUDED.performer_roles,
-                         visible = EXCLUDED.visible
-                       """,
-                    (
-                        username,
-                        post.get("post_index"),
-                        Jsonb(post),
-                        posted_at,
-                        pdate,
-                        ev_start,
-                        ev_end,
-                        ticket,
-                        listing,
-                        proles,
-                        vis,
-                    ),
-                )
+                upsert_post_row(conn, username, post)
                 pc += 1
         conn.commit()
+    return ac, pc
+
+
+def refresh_posts_visible_from_db() -> int:
+    """
+    Recompute posts.visible from post_json only (no catalog JSON file).
+    Use on Railway/local after changing post_visible_on_site or if visible is stale.
+    """
+    n = 0
+    with closing(get_connection()) as conn:
+        rows = conn.execute("SELECT id, post_json FROM posts").fetchall()
+        for r in rows:
+            pj = r["post_json"]
+            if isinstance(pj, str):
+                pj = json.loads(pj)
+            if not isinstance(pj, dict):
+                continue
+            vis = post_visible_on_site(pj)
+            conn.execute(
+                "UPDATE posts SET visible = %s WHERE id = %s",
+                (vis, r["id"]),
+            )
+            n += 1
+        conn.commit()
+    return n
+
+
+def _posts_flat_from_by_username(by_u: dict) -> list[dict]:
+    """Same shape as scrape_rapidapi_cloudinary.build_posts_flat (for catalog JSON)."""
+    posts_flat: list[dict] = []
+    for un in sorted(by_u.keys()):
+        block = by_u[un]
+        for p in block.get("posts") or []:
+            if not isinstance(p, dict):
+                continue
+            posts_flat.append(
+                {
+                    "username": un,
+                    "post_index": p.get("post_index"),
+                    "caption": p.get("caption"),
+                    "timestamp": p.get("timestamp"),
+                    "instagram_url": p.get("instagram_url"),
+                    "is_video": p.get("is_video"),
+                    "media": p.get("media") or [],
+                    "caption_analysis": p.get("caption_analysis"),
+                }
+            )
+    return posts_flat
+
+
+def export_db_to_catalog_json(out_path: Path | None = None) -> tuple[int, int]:
+    """
+    Write cloudinary_catalog.json from Postgres (accounts + posts.post_json).
+
+    Use when the DB (e.g. Railway) has users that are missing from your local JSON —
+    then commit or back up that file. Otherwise a plain ``sync_from_json`` from an
+    incomplete local JSON TRUNCATES the DB and drops those accounts.
+    """
+    path = out_path or CATALOG_JSON_PATH
+    now_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    by_u: dict[str, dict] = {}
+    ac = 0
+    pc = 0
+    with closing(get_connection()) as conn:
+        acc_rows = conn.execute(
+            "SELECT username, profile_json FROM accounts ORDER BY username"
+        ).fetchall()
+        for ar in acc_rows:
+            un = ar["username"]
+            prof = ar["profile_json"]
+            if isinstance(prof, str):
+                prof = json.loads(prof)
+            if not isinstance(prof, dict):
+                prof = {}
+            post_rows = conn.execute(
+                "SELECT post_json FROM posts WHERE username = %s "
+                "ORDER BY post_index NULLS LAST",
+                (un,),
+            ).fetchall()
+            plist: list[dict] = []
+            for pr in post_rows:
+                pj = pr["post_json"]
+                if isinstance(pj, str):
+                    pj = json.loads(pj)
+                if isinstance(pj, dict):
+                    plist.append(pj)
+                    pc += 1
+            by_u[un] = {
+                "profile": prof,
+                "posts": plist,
+                "last_scraped_at": now_iso,
+            }
+            ac += 1
+    catalog: dict[str, Any] = {
+        "by_username": by_u,
+        "posts_flat": _posts_flat_from_by_username(by_u),
+        "gemini_last_saved_at": now_iso,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
     return ac, pc
 
 
@@ -343,11 +539,12 @@ def list_usernames() -> list[str]:
 
 
 def account_exists(username: str) -> bool:
-    if username.strip().lower() in HIDDEN_FROM_FEED_USERNAMES:
+    u = username.strip()
+    if u.lower() in HIDDEN_FROM_FEED_USERNAMES:
         return False
     with closing(get_connection()) as conn:
         r = conn.execute(
-            "SELECT 1 FROM accounts WHERE username = %s LIMIT 1", (username,)
+            "SELECT 1 FROM accounts WHERE LOWER(username) = LOWER(%s) LIMIT 1", (u,)
         ).fetchone()
         return r is not None
 
@@ -374,15 +571,144 @@ def username_in_catalog(username: str) -> bool:
     for k in (cat.get("by_username") or {}):
         if str(k).strip().lower() == un_lower:
             return True
-    if SCRAPE_USERNAMES_PATH.is_file():
-        for line in SCRAPE_USERNAMES_PATH.read_text(encoding="utf-8").splitlines():
-            s = line.strip()
-            if not s or s.startswith("#"):
-                continue
-            cell = s.split("|")[0].strip().lstrip("@").lower()
-            if cell == un_lower:
-                return True
     return False
+
+
+def _build_posts_flat_local(by_u: dict) -> list[dict]:
+    """Mirror of scrape_rapidapi_cloudinary.build_posts_flat (avoid import cycle)."""
+    posts_flat: list[dict] = []
+    for un in sorted((by_u or {}).keys()):
+        block = by_u[un] or {}
+        for p in block.get("posts") or []:
+            if not isinstance(p, dict):
+                continue
+            posts_flat.append(
+                {
+                    "username": un,
+                    "post_index": p.get("post_index"),
+                    "caption": p.get("caption"),
+                    "timestamp": p.get("timestamp"),
+                    "instagram_url": p.get("instagram_url"),
+                    "is_video": p.get("is_video"),
+                    "media": p.get("media") or [],
+                    "caption_analysis": p.get("caption_analysis"),
+                }
+            )
+    return posts_flat
+
+
+SCRAPE_USERNAMES_PATH = ROOT / "back-end" / "data" / "scrape_usernames.txt"
+
+
+def remove_username_from_catalog_and_sync(username: str) -> bool:
+    """Remove one handle from cloudinary_catalog.json and run full Postgres sync. Returns True if removed."""
+    raw = (username or "").strip().lstrip("@")
+    if not raw:
+        return False
+    un_lower = raw.lower()
+    cat = load_catalog_json()
+    by_u = dict(cat.get("by_username") or {})
+    key_to_remove = None
+    for k in list(by_u.keys()):
+        if str(k).strip().lower() == un_lower:
+            key_to_remove = k
+            break
+    if not key_to_remove:
+        return False
+    del by_u[key_to_remove]
+    cat["by_username"] = by_u
+    cat["posts_flat"] = _build_posts_flat_local(by_u)
+    CATALOG_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(CATALOG_JSON_PATH, "w", encoding="utf-8") as f:
+        json.dump(cat, f, indent=2, ensure_ascii=False)
+    sync_from_json(cat)
+    return True
+
+
+def delete_suggest_jobs_for_username(username: str) -> int:
+    """Delete suggest_jobs rows for this raw username (case-insensitive). Returns rowcount."""
+    raw = (username or "").strip().lstrip("@")
+    if not raw:
+        return 0
+    un_lower = raw.lower()
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "DELETE FROM suggest_jobs WHERE lower(trim(username_raw)) = %s",
+            (un_lower,),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+
+
+def remove_username_from_scrape_usernames_file(username: str) -> bool:
+    """Remove the line for this username from scrape_usernames.txt if present. Returns True if a line was removed."""
+    raw = (username or "").strip().lstrip("@")
+    if not raw or not SCRAPE_USERNAMES_PATH.is_file():
+        return False
+    un_lower = raw.lower()
+    lines = SCRAPE_USERNAMES_PATH.read_text(encoding="utf-8").splitlines()
+    out: list[str] = []
+    removed = False
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("#") or not stripped.strip():
+            out.append(line)
+            continue
+        first = stripped.split("|", 1)[0].strip().lower()
+        if first == un_lower:
+            removed = True
+            continue
+        out.append(line)
+    if not removed:
+        return False
+    SCRAPE_USERNAMES_PATH.write_text("\n".join(out) + ("\n" if out else ""), encoding="utf-8")
+    return True
+
+
+def clear_stuck_suggest_user(username: str) -> dict[str, bool | int]:
+    """Remove username from catalog JSON+DB, suggest_jobs, and scrape_usernames line (admin / retry after bad suggest)."""
+    removed_cat = remove_username_from_catalog_and_sync(username)
+    deleted_jobs = delete_suggest_jobs_for_username(username)
+    removed_txt = remove_username_from_scrape_usernames_file(username)
+    return {
+        "removed_from_catalog": removed_cat,
+        "deleted_suggest_jobs": deleted_jobs,
+        "removed_from_scrape_list": removed_txt,
+    }
+
+
+def sync_accounts_from_scrape_usernames() -> int:
+    """
+    One-off admin helper: ensure every username in back-end/data/scrape_usernames.txt
+    exists as a row in accounts (empty profile_json). Returns number of inserts.
+    """
+    if not SCRAPE_USERNAMES_PATH.is_file():
+        return 0
+    rows = []
+    for line in SCRAPE_USERNAMES_PATH.read_text(encoding="utf-8").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        username = raw.split("|", 1)[0].strip().lstrip("@")
+        if username:
+            rows.append(username)
+    if not rows:
+        return 0
+    inserted = 0
+    with closing(get_connection()) as conn:
+        for username in sorted(set(rows)):
+            cur = conn.execute(
+                """
+                INSERT INTO accounts (username, profile_json)
+                VALUES (%s, '{}'::jsonb)
+                ON CONFLICT (username) DO NOTHING
+                """,
+                (username,),
+            )
+            if cur.rowcount:
+                inserted += 1
+        conn.commit()
+    return inserted
 
 
 def _parse_block_created_at(raw: str | None) -> datetime | None:
@@ -403,34 +729,43 @@ _STALE_QUEUED_MINUTES = 120
 _STALE_RUNNING_HOURS = 6
 _STALE_FAIL_MSG = "Обработката траеше предолго. Обиди се повторно."
 
+# Serialize stale repair across multiple Railway workers (same UPDATE was deadlocking).
+_ADV_LOCK_REPAIR_K1 = 54821
+_ADV_LOCK_REPAIR_K2 = 92017
+
 
 def suggest_repair_stale_jobs() -> int:
-    """Fail stale queued jobs; clear zombie running jobs (worker crash)."""
+    """Fail stale queued jobs; clear zombie running jobs (worker crash).
+
+    Advisory xact lock so only one session runs this UPDATE at a time (avoids suggest_jobs deadlocks).
+    Retries on deadlock if another client still uses an older repair query.
+    """
     now = datetime.now(timezone.utc)
     cutoff_q = now - timedelta(minutes=_STALE_QUEUED_MINUTES)
     cutoff_run = now - timedelta(hours=_STALE_RUNNING_HOURS)
-    n = 0
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            """
-            UPDATE suggest_jobs
-            SET status = 'done', ok = false, message = %s, updated_at = %s
-            WHERE status = 'queued' AND created_at < %s
-            """,
-            (_STALE_FAIL_MSG, now, cutoff_q),
-        )
-        n += cur.rowcount if cur.rowcount is not None else 0
-        cur = conn.execute(
-            """
-            UPDATE suggest_jobs
-            SET status = 'done', ok = false, message = %s, updated_at = %s
-            WHERE status = 'running' AND updated_at < %s
-            """,
-            (_STALE_FAIL_MSG, now, cutoff_run),
-        )
-        n += cur.rowcount if cur.rowcount is not None else 0
-        conn.commit()
-    return n
+    sql = """
+    UPDATE suggest_jobs
+    SET status = 'done', ok = false, message = %s, updated_at = %s
+    WHERE (status = 'queued' AND created_at < %s)
+       OR (status = 'running' AND updated_at < %s)
+    """
+    params = (_STALE_FAIL_MSG, now, cutoff_q, cutoff_run)
+    for attempt in range(5):
+        try:
+            with closing(get_connection()) as conn:
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s, %s)",
+                    (_ADV_LOCK_REPAIR_K1, _ADV_LOCK_REPAIR_K2),
+                )
+                cur = conn.execute(sql, params)
+                n = cur.rowcount if cur.rowcount is not None else 0
+                conn.commit()
+                return int(n)
+        except DeadlockDetected:
+            if attempt >= 4:
+                raise
+            time.sleep(0.02 + random.random() * 0.06)
+    return 0
 
 
 def clear_all_suggest_jobs() -> int:
@@ -565,30 +900,45 @@ def suggest_job_get(job_id: int) -> dict | None:
 
 
 def suggest_job_claim_next() -> dict | None:
-    """Atomically claim one queued job and mark it running."""
+    """Atomically claim one queued job and mark it running.
+
+    Single UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED) avoids a deadlock
+    window between two statements (SELECT then UPDATE) when multiple workers
+    or repair run concurrently.
+    """
     now = datetime.now(timezone.utc)
-    with closing(get_connection()) as conn:
-        conn.execute("BEGIN")
-        r = conn.execute(
-            """
-            SELECT id, username_raw, ip_hash
-            FROM suggest_jobs
-            WHERE status = 'queued'
-            ORDER BY id ASC
-            LIMIT 1
-            FOR UPDATE SKIP LOCKED
-            """
-        ).fetchone()
-        if not r:
-            conn.execute("COMMIT")
-            return None
-        job_id = int(r["id"])
-        conn.execute(
-            "UPDATE suggest_jobs SET status = 'running', updated_at = %s WHERE id = %s",
-            (now, job_id),
-        )
-        conn.execute("COMMIT")
-        return {"id": job_id, "username_raw": r["username_raw"], "ip_hash": r["ip_hash"]}
+    sql = """
+    WITH c AS (
+      SELECT id
+      FROM suggest_jobs
+      WHERE status = 'queued'
+      ORDER BY id ASC
+      LIMIT 1
+      FOR UPDATE SKIP LOCKED
+    )
+    UPDATE suggest_jobs AS j
+    SET status = 'running', updated_at = %s
+    FROM c
+    WHERE j.id = c.id
+    RETURNING j.id, j.username_raw, j.ip_hash
+    """
+    for attempt in range(5):
+        try:
+            with closing(get_connection()) as conn:
+                r = conn.execute(sql, (now,)).fetchone()
+                conn.commit()
+                if not r:
+                    return None
+                return {
+                    "id": int(r["id"]),
+                    "username_raw": r["username_raw"],
+                    "ip_hash": r["ip_hash"],
+                }
+        except DeadlockDetected:
+            if attempt >= 4:
+                raise
+            time.sleep(0.02 + random.random() * 0.06)
+    return None
 
 
 def suggest_job_finish(
@@ -711,7 +1061,7 @@ def user_blocks_from_db(
     sql = (
         "SELECT p.username, p.post_json, a.profile_json FROM posts p "
         "JOIN accounts a ON a.username = p.username "
-        "WHERE p.visible = TRUE" + ds + hs + " ORDER BY LOWER(p.username), p.posted_at DESC"
+        "WHERE TRUE" + ds + hs + " ORDER BY LOWER(p.username), p.posted_at DESC"
     )
     with closing(get_connection()) as conn:
         rows = conn.execute(sql, dargs + hargs).fetchall()
@@ -758,7 +1108,7 @@ def _profile_display_handle(prof: dict, username: str) -> str:
 def _username_clause(username: str | None) -> tuple[str, list[Any]]:
     if not username or not str(username).strip():
         return "", []
-    return " AND p.username = %s", [username.strip()]
+    return " AND LOWER(p.username) = LOWER(%s)", [username.strip()]
 
 
 def _search_clause(search: str | None) -> tuple[str, list[Any]]:
@@ -813,27 +1163,35 @@ def _where_visible_and_filters(
     rs, rargs = _role_clause(performer_role)
     ss, sargs = _search_clause(search)
     hs, hargs = _hidden_exclude_posts_sql("p")
+    # Include all posts (ignore posts.visible); use post_visible_on_site only when syncing JSON.
     return (
-        " WHERE p.visible = TRUE" + ds + ps + ws + us + rs + ss + hs,
+        " WHERE TRUE" + ds + ps + ws + us + rs + ss + hs,
         dargs + pargs + wargs + uargs + rargs + sargs + hargs,
     )
 
 
-# With date/price filters: chronological event_date, then lowest price (nulls last).
+# Global ordering for flat event feeds:
+# 1) Posts with AI event_date today or in the future: soonest date first, then like_count (post_json).
+# 2) Bottom: past events (Поминат), no event_date, or “only when posted” style cards (no usable future date).
 _ORDER_FLAT = (
     " ORDER BY "
-    "CASE WHEN p.event_date IS NULL THEN 1 ELSE 0 END ASC, "
-    "p.event_date ASC, "
-    "CASE WHEN p.ticket_price_mkd IS NULL THEN 1 ELSE 0 END ASC, "
-    "p.ticket_price_mkd ASC"
-)
-
-# No filters: newest Instagram post first (posted_at from scrape).
-_ORDER_BY_POSTED = (
-    " ORDER BY "
+    "CASE "
+    "  WHEN p.event_date IS NOT NULL AND p.event_date >= CURRENT_DATE THEN 0 "
+    "  ELSE 1 "
+    "END ASC, "
+    "CASE "
+    "  WHEN p.event_date IS NOT NULL AND p.event_date >= CURRENT_DATE THEN p.event_date "
+    "END ASC NULLS LAST, "
+    "CASE "
+    "  WHEN p.event_date IS NOT NULL AND p.event_date >= CURRENT_DATE "
+    "  THEN COALESCE((NULLIF(TRIM(p.post_json->>'like_count'), ''))::bigint, 0) "
+    "END DESC NULLS LAST, "
     "CASE WHEN p.posted_at IS NULL THEN 1 ELSE 0 END ASC, "
     "p.posted_at DESC"
 )
+
+# For now, the main feed (no filters) uses the same ordering as filtered views.
+_ORDER_BY_POSTED = _ORDER_FLAT
 
 
 def first_event_date_from_post(post: dict) -> date | None:
@@ -848,7 +1206,7 @@ def first_event_date_from_post(post: dict) -> date | None:
 
 
 def fetch_flat_events_for_weekend_range(date_from: date, date_to: date) -> list[dict]:
-    """All visible posts whose AI event_date overlaps [date_from, date_to] (same rules as date filter)."""
+    """Posts whose AI event_date overlaps [date_from, date_to] (same rules as date filter)."""
     where_sql, args = _where_visible_and_filters(
         date_from, date_to, None, None, None, None, None
     )
@@ -941,9 +1299,9 @@ def fetch_flat_events_filtered(
     search: str | None = None,
 ) -> tuple[list[dict], int]:
     """
-    Flat list of visible posts with media.
-    If filters_active: sort by event_date then price.
-    Else: sort by Instagram posted_at (newest first).
+    Flat list of posts with at least one image/video URL in post_json.media (not filtered by posts.visible).
+    Sort: upcoming/today with event_date first (soonest date), then like_count;
+    past dates and missing event_date last (Поминат / posted-only).
     Each entry: username, instagram_handle, display_name, profile_full_name, post, media.
     """
     where_sql, args = _where_visible_and_filters(
@@ -991,6 +1349,27 @@ def fetch_flat_events_filtered(
 
 if __name__ == "__main__":
     import sys
+
+    if len(sys.argv) >= 2 and sys.argv[1] == "--refresh-visible":
+        n = refresh_posts_visible_from_db()
+        print(f"Recomputed visible on {n} post row(s) -> Postgres (DATABASE_URL)")
+        sys.exit(0)
+
+    if len(sys.argv) >= 2 and sys.argv[1] == "--export-json":
+        out = Path(sys.argv[2]).resolve() if len(sys.argv) >= 3 else CATALOG_JSON_PATH
+        ac, pc = export_db_to_catalog_json(out)
+        print(f"Exported {ac} accounts, {pc} posts -> {out}")
+        sys.exit(0)
+
+    if len(sys.argv) >= 3 and sys.argv[1] == "remove-user":
+        u = sys.argv[2].strip()
+        r = clear_stuck_suggest_user(u)
+        print(
+            f"removed_from_catalog={r['removed_from_catalog']} "
+            f"deleted_suggest_jobs={r['deleted_suggest_jobs']} "
+            f"removed_from_scrape_list={r['removed_from_scrape_list']}"
+        )
+        sys.exit(0)
 
     if not CATALOG_JSON_PATH.is_file():
         print(f"Missing {CATALOG_JSON_PATH}", file=sys.stderr)

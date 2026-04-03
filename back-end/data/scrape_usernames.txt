@@ -53,3 +53,27 @@ maalski_bar | 2026-03-30T23:30:23.707033+00:00 | 2026-04-06T23:30:23.707190+00:0
 room8.bar | 2026-03-30T23:30:48.555962+00:00 | 2026-04-06T23:30:48.556447+00:00
 robbierayrobotshow | 2026-03-30T23:31:00.430181+00:00 | 2026-04-06T23:31:00.430588+00:00
 eventsmakedonija |  | 
+moshbarfood |  | 
+mkc_skopje |  | 
+stanica26 |  | 
+threekitchenbar |  | 
+club_centralpark_official |  | 
+musandra.night_club |  | 
+casabar_skopje |  | 
+kafana_bajka |  | 
+crashbar.mk |  | 
+owl.mixology.skp |  | 
+havana.summer.club |  | 
+club_epicentar |  | 
+tribecabar |  | 
+casa_cubana |  | 
+klub1212 |  | 
+skopskimerak |  | 
+gradskakafeanadvor |  | 
+izlet_kafe |  | 
+clubmarakana |  | 
+gostilnicaskarabar |  | 
+kaldrma_ |  | 
+vangogh.bar |  | 
+dosie_skopje |  | 
+_badu_bar |  | 

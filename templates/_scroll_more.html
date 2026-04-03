@@ -21,6 +21,7 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (data.html) grid.insertAdjacentHTML('beforeend', data.html);
+        if (typeof window.NLSyncSavedEvents === 'function') window.NLSyncSavedEvents();
         hasMore = !!data.has_more;
         if (typeof data.next_offset === 'number') offset = data.next_offset;
         else offset += {{ page_size|default(8) }};

@@ -6,8 +6,12 @@ Env:
   RAPIDAPI_KEY — RapidAPI key for instagram120.p.rapidapi.com
   Cloudinary: ../database-adding-content/.env (CLOUDINARY_URL or CLOUD_NAME + API_KEY + API_SECRET)
 
-Targets & rescrape schedule: back-end/data/scrape_usernames.txt (usernames + last/next UTC datetimes).
+Targets & rescrape schedule: back-end/data/scrape_usernames.txt (usernames + last/next UTC datetimes),
+or all accounts from Postgres with --from-db.
 Skip until next_rescrape_due unless --force.
+
+After each successful username, cloudinary_catalog.json is saved (safe to Ctrl+C and resume).
+Per-username failures retry --retries times with --retry-delay seconds, then skip and continue.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -30,6 +35,7 @@ from dotenv import load_dotenv
 
 SCRAPING_DIR = Path(__file__).resolve().parent
 BACKEND_ROOT = SCRAPING_DIR.parent
+REPO_ROOT = BACKEND_ROOT.parent
 ENV_PATH = BACKEND_ROOT / "database-adding-content" / ".env"
 DEFAULT_CATALOG = BACKEND_ROOT / "data" / "cloudinary_catalog.json"
 SCRAPE_USERNAMES_TXT = BACKEND_ROOT / "data" / "scrape_usernames.txt"
@@ -179,6 +185,28 @@ def should_skip_row(row: ScrapeRow, force: bool) -> bool:
     return datetime.now(timezone.utc) < nxt
 
 
+def _int_followers(obj: dict | None) -> int | None:
+    """Best-effort follower count from Instagram-style user / payload dicts."""
+    if not isinstance(obj, dict):
+        return None
+    for key in ("follower_count", "followers_count"):
+        v = obj.get(key)
+        if v is not None:
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                continue
+    ef = obj.get("edge_followed_by")
+    if isinstance(ef, dict):
+        c = ef.get("count")
+        if c is not None:
+            try:
+                return int(c)
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
 def _profile_from_rapidapi_result(res: dict, username: str, edges: list[dict]) -> dict:
     """Profile + avatar URL from the same RapidAPI /posts payload (user, profile, or first owner)."""
     user = res.get("user")
@@ -194,18 +222,10 @@ def _profile_from_rapidapi_result(res: dict, username: str, edges: list[dict]) -
         or user.get("profile_pic_url")
         or user.get("profile_pic_url_https")
     )
-    ef = user.get("edge_followed_by") or {}
-    eg = user.get("edge_follow") or {}
-    em = user.get("edge_owner_to_timeline_media") or {}
     return {
         "username": user.get("username") or username,
-        "full_name": user.get("full_name") or "",
-        "bio": user.get("biography") or user.get("bio") or "",
-        "followers": ef.get("count") if isinstance(ef, dict) else user.get("follower_count"),
-        "following": eg.get("count") if isinstance(eg, dict) else user.get("following_count"),
-        "posts_count": em.get("count") if isinstance(em, dict) else user.get("media_count"),
         "is_verified": bool(user.get("is_verified")),
-        "external_url": user.get("external_url") or "",
+        "full_name": user.get("full_name") or "",
         "profile_pic_url": pic,
     }
 
@@ -324,6 +344,11 @@ def scrape_user_to_cloudinary(username: str, api_key: str) -> dict:
         ig_url = f"https://www.instagram.com/p/{code}/" if code else None
         cap = caption_text(node)
         ts = ts_iso(node)
+        like_count = node.get("like_count")
+        try:
+            like_count = int(like_count) if like_count is not None else None
+        except (TypeError, ValueError):
+            like_count = None
 
         mt = node.get("media_type", 1)
         is_reel = mt == 2
@@ -343,6 +368,7 @@ def scrape_user_to_cloudinary(username: str, api_key: str) -> dict:
             "timestamp": ts,
             "instagram_url": ig_url,
             "is_video": bool(is_reel),
+            "like_count": like_count,
             "media": [],
         }
 
@@ -388,6 +414,44 @@ def load_existing_catalog(path: Path) -> dict:
         return {"by_username": {}, "posts_flat": []}
 
 
+def _ensure_repo_root_on_path() -> None:
+    """So `import catalog_db` works when the script is run as a file path."""
+    root = str(REPO_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+
+def persist_catalog(out: Path, catalog: dict, by_u: dict) -> None:
+    """Write catalog JSON (by_username + posts_flat). Call after each user for crash safety."""
+    catalog["by_username"] = by_u
+    catalog["posts_flat"] = build_posts_flat(by_u)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+
+
+def scrape_user_to_cloudinary_with_retries(
+    username: str,
+    api_key: str,
+    *,
+    max_attempts: int,
+    retry_delay_sec: float,
+) -> dict:
+    """Retry RapidAPI + upload on transient failures; re-raises after last attempt."""
+    last_err: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return scrape_user_to_cloudinary(username, api_key)
+        except Exception as e:
+            last_err = e
+            print(f"  X Attempt {attempt}/{max_attempts} failed: {e}", file=sys.stderr)
+            if attempt < max_attempts:
+                print(f"  ... retry in {retry_delay_sec:.0f}s")
+                time.sleep(retry_delay_sec)
+    assert last_err is not None
+    raise last_err
+
+
 def build_posts_flat(by_username: dict) -> list[dict]:
     posts_flat: list[dict] = []
     for un in sorted(by_username.keys()):
@@ -424,11 +488,30 @@ def main() -> None:
         help="Ignore next_rescrape_due and re-scrape all listed users.",
     )
     p.add_argument(
+        "--from-db",
+        action="store_true",
+        help="Ignore usernames TXT; scrape all usernames from the accounts table.",
+    )
+    p.add_argument(
         "-l",
         "--usernames-file",
         type=Path,
         default=SCRAPE_USERNAMES_TXT,
         help=f"TXT list of usernames + scrape times (default: {SCRAPE_USERNAMES_TXT})",
+    )
+    p.add_argument(
+        "--retries",
+        type=int,
+        default=5,
+        metavar="N",
+        help="RapidAPI+scrape attempts per username before skipping (default: 5)",
+    )
+    p.add_argument(
+        "--retry-delay",
+        type=float,
+        default=10.0,
+        metavar="SEC",
+        help="Seconds to wait between failed attempts (default: 10)",
     )
     args = p.parse_args()
     out = args.output.resolve()
@@ -445,7 +528,19 @@ def main() -> None:
         print("Set RAPIDAPI_KEY in environment or .env", file=sys.stderr)
         sys.exit(1)
 
-    rows = load_scrape_rows(list_path)
+    _ensure_repo_root_on_path()
+
+    if args.from_db:
+        # Use all known accounts from the DB instead of the usernames TXT file.
+        try:
+            from catalog_db import list_usernames
+        except ImportError:
+            print("Could not import catalog_db.list_usernames.", file=sys.stderr)
+            sys.exit(1)
+        usernames = list_usernames()
+        rows = [ScrapeRow(username=u) for u in usernames]
+    else:
+        rows = load_scrape_rows(list_path)
 
     catalog = load_existing_catalog(out)
     by_u = catalog.get("by_username") or {}
@@ -456,6 +551,9 @@ def main() -> None:
 
     scraped = 0
     skipped = 0
+    failed = 0
+    max_attempts = max(1, int(args.retries))
+    retry_delay = max(0.0, float(args.retry_delay))
 
     for row in rows:
         username = row.username
@@ -472,7 +570,21 @@ def main() -> None:
             skipped += 1
             continue
 
-        block = scrape_user_to_cloudinary(username, api_key)
+        try:
+            block = scrape_user_to_cloudinary_with_retries(
+                username,
+                api_key,
+                max_attempts=max_attempts,
+                retry_delay_sec=retry_delay,
+            )
+        except Exception as e:
+            print(
+                f"SKIP @{username} after {max_attempts} attempt(s): {e}",
+                file=sys.stderr,
+            )
+            failed += 1
+            continue
+
         prof = block.get("profile")
         if isinstance(prof, dict):
             prof = dict(prof)
@@ -487,18 +599,19 @@ def main() -> None:
         row.last_scraped_at = block["last_scraped_at"]
         row.next_rescrape_due_at = (now + timedelta(days=SCRAPE_INTERVAL_DAYS)).isoformat()
         scraped += 1
+        persist_catalog(out, catalog, by_u)
+        print(f"  Saved catalog ({scraped} ok this run, {len(by_u)} accounts total).")
 
-    save_scrape_rows(list_path, rows)
+    if not args.from_db:
+        save_scrape_rows(list_path, rows)
 
-    catalog["by_username"] = by_u
-    catalog["posts_flat"] = build_posts_flat(by_u)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    persist_catalog(out, catalog, by_u)
 
     print(f"\nDone. Catalog: {out}")
     print(f"Usernames list: {list_path}")
-    print(f"Scraped: {scraped}  |  Skipped (not due yet): {skipped}")
+    print(
+        f"Scraped: {scraped}  |  Skipped (not due yet): {skipped}  |  Failed: {failed}"
+    )
 
 
 if __name__ == "__main__":

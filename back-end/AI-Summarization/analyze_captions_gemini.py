@@ -62,6 +62,7 @@ import os
 import re
 import sys
 import time
+from contextlib import closing
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -71,6 +72,7 @@ from typing import Literal
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from psycopg.errors import DeadlockDetected
 from pydantic import BaseModel, ConfigDict, Field
 
 AI_SUM_DIR = Path(__file__).resolve().parent
@@ -146,8 +148,9 @@ class CaptionAnalysis(BaseModel):
 
     listing_type: Literal["nightlife_event", "not_nightlife"] = Field(
         description=(
-            "nightlife_event: club/party/concert/night out at a venue. "
-            "not_nightlife: food/menu, memes, staff photos, unrelated branding, giveaways not tied to a night event"
+            "nightlife_event: club/party/concert/night out at a venue; bar/pub evening, live music or DJ at a pub, "
+            "themed night at the venue. "
+            "not_nightlife: food/menu-only, memes, staff photos, unrelated branding, giveaways not tied to a night event"
         ),
     )
     not_nightlife_label: str | None = Field(
@@ -172,7 +175,7 @@ Rules:
 - start_time / end_time: 24h HH:MM (00:00, 22:30). null if not stated.
 - reservations_phone: digits from reservation lines. reservations_has_info true if they say 'резервации' etc. but no number.
 - location: venue + neighborhood/city when stated.
-- listing_type: nightlife_event for club nights, parties, live/DJ nights at a venue. not_nightlife for menus, coffee, unrelated ads, reposts with no event.
+- listing_type: nightlife_event for club nights, parties, live/DJ nights, pub/bar evenings, themed nights (e.g. St. Patrick's at the venue), quiz or live music at a bar/pub. not_nightlife for menus-only, coffee, unrelated ads, reposts with no event.
 - not_nightlife_label: required when listing_type is not_nightlife (short snake_case reason); null for nightlife_event."""
 
 
@@ -181,17 +184,83 @@ class BioNightlifeAssessment(BaseModel):
 
     is_nightlife_venue: bool = Field(
         description=(
-            "True if the biography describes a bar, nightclub, club, lounge, cabaret, "
-            "or venue that hosts DJ/parties/night events. False for personal blogs, "
-            "generic shops, food-only places with no events, unrelated brands."
+            "True if the biography describes a bar, pub, Irish pub, sports bar, nightclub, club, "
+            "lounge, cabaret, or venue that hosts DJ nights, live music, parties, or evening events. "
+            "False for personal blogs, generic shops, daytime-only cafés with no events, unrelated brands."
         ),
     )
 
 
 BIO_SYSTEM = """You classify Instagram profile biographies (Macedonian, English, or mixed).
-Reply as JSON only. Decide if the bio clearly indicates a nightlife-oriented venue or business
-where people go out at night (club, bar, lounge, cabaret, party venue with DJs/live music).
-False for personal accounts, influencers, retail, cafés with no events, memes, or unrelated text."""
+Reply as JSON only. Decide if the bio clearly indicates a venue where people go out in the evening
+or at night: bar, pub, Irish pub, sports bar, nightclub, club, lounge, cabaret, or a place that hosts
+DJs, live bands, parties, quiz/themed nights, St. Patrick's or similar celebrations at the venue.
+True for pubs/bars even if they also serve food, when the account is clearly the venue (not a food blogger).
+False for personal accounts, influencers, retail, pure takeaway/delivery with no venue, memes, or unrelated text."""
+
+
+class SuggestCaptionsAssessment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    is_nightlife_related: bool = Field(
+        description=(
+            "True if these captions (same account) indicate going out, social nights, or event-style "
+            "promotion: nightclubs, bars, pubs, kafana (кафана), live music, DJs, parties, themed nights, "
+            "concerts at a venue, festivals, ticketed events, evening reservations, random one-off events "
+            "at a venue. False if only food menus, product ads, staff selfies, or unrelated content."
+        ),
+    )
+
+
+SUGGEST_CAPTIONS_SYSTEM = """You receive up to 3 Instagram post captions from ONE account (Macedonian, English, or mixed).
+Reply as JSON only.
+
+Decide if the account fits a NIGHTLIFE / GOING-OUT / SOCIAL EVENTS scope for a city aggregator:
+- Nightclubs, bars, pubs, Irish/sports pubs, lounges, kafana (traditional tavern with music/evenings)
+- Venues posting about parties, live bands, DJs, themed nights, St. Patrick's / similar celebrations at the venue
+- Promoters or venues posting ticketed events, weekend lineups, reservations for the evening
+- Any clearly social or entertainment event where people gather (not private birthdays unless promoted as venue event)
+
+Answer true when at least one caption clearly supports this. Answer false when captions are only daily menus,
+coffee, generic product ads, memes, repost chains, or nothing suggests a venue or night out.
+
+Be inclusive for bars/kafana/pubs that mix food with evening entertainment."""
+
+
+PROFILE_METADATA_SUGGEST_SYSTEM = """No usable Instagram post captions were available (empty or missing). You only see:
+the account username and optional profile display name (Macedonian, English, or mixed).
+
+Reply as JSON only with the same schema. Decide if this account is LIKELY a going-out / nightlife-related venue:
+bars, pubs, Irish/sports pubs, nightclubs, kafana, lounges, live music venues, or places that host evening events/parties.
+
+True when username or full name clearly suggests such a venue (e.g. bar, pub, club, lounge, kafana, skopje, night).
+True for plausible hospitality/venue names when text is short. False for personal blogs, retail shops, unrelated brands.
+When uncertain between unrelated vs venue, prefer true if the handle/name hints at food+drink+evening establishment."""
+
+
+class MacedoniaAssessment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    is_in_north_macedonia: bool = Field(
+        description=(
+            "True if the Instagram account clearly represents a place, venue, promoter, or event "
+            "series located in North Macedonia (e.g. Skopje, Ohrid, Bitola, Tetovo, Kumanovo). "
+            "False if it is clearly about another country or has no strong evidence it is in North Macedonia."
+        ),
+    )
+
+
+MACEDONIA_SYSTEM = """You decide if an Instagram account is in NORTH MACEDONIA.
+Consider: biography, full name, city/country/location text, hashtags, and the language of the captions.
+
+Rules:
+- True ONLY when there is clear evidence that the venue/events are in North Macedonia or Macedonian cities
+  (e.g. Skopje, Охрид / Ohrid, Bitola, Tetovo, Kumanovo, Prilep, Strumica, etc.).
+- Strong signals: 'Skopje', 'Скопје', 'MKD', 'North Macedonia', Macedonian address/phone, Macedonian-only captions.
+- False when the account is clearly for another country (e.g. 'Belgrade', 'Athens', 'Sofia', 'NYC') or generic/global.
+- If you are uncertain or the text is very generic, answer false.
+
+Reply as JSON only, matching the schema."""
 
 
 def load_api_key() -> str:
@@ -471,6 +540,113 @@ def analyze_biography_nightlife(client: genai.Client, bio: str) -> bool:
     return bool(parsed.is_nightlife_venue)
 
 
+def analyze_sample_captions_for_suggest(client: genai.Client, captions: list[str]) -> bool:
+    """Gemini: from up to 3 post captions, does this account fit nightlife / social-events scope?"""
+    caps = [str(c).strip() for c in (captions or []) if c and str(c).strip()]
+    if not caps:
+        return False
+    caps = caps[:3]
+    model_id = os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
+    parts: list[str] = [
+        "The following are Instagram post captions from the same account (newest samples first may be mixed order).",
+        "",
+    ]
+    for i, c in enumerate(caps, 1):
+        parts.append(f"--- Caption {i} ---\n{c}")
+    prompt = "\n".join(parts)
+    contents = types.Content(role="user", parts=[types.Part(text=prompt)])
+    resp = client.models.generate_content(
+        model=model_id,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=SUGGEST_CAPTIONS_SYSTEM,
+            response_mime_type="application/json",
+            response_json_schema=SuggestCaptionsAssessment.model_json_schema(),
+        ),
+    )
+    raw = (resp.text or "").strip()
+    if not raw:
+        return False
+    parsed = SuggestCaptionsAssessment.model_validate_json(raw)
+    return bool(parsed.is_nightlife_related)
+
+
+def analyze_profile_metadata_for_suggest(
+    client: genai.Client,
+    *,
+    username: str,
+    full_name: str | None,
+) -> bool:
+    """When post captions are missing/empty: judge from @handle and display name only."""
+    fn = (full_name or "").strip()
+    un = (username or "").strip().lstrip("@")
+    if not un and not fn:
+        return False
+    model_id = os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
+    lines = [
+        f"Username: @{un}" if un else "Username: (missing)",
+        f"Full name on profile: {fn or '(empty)'}",
+    ]
+    prompt = "\n".join(lines)
+    contents = types.Content(role="user", parts=[types.Part(text=prompt)])
+    resp = client.models.generate_content(
+        model=model_id,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=PROFILE_METADATA_SUGGEST_SYSTEM,
+            response_mime_type="application/json",
+            response_json_schema=SuggestCaptionsAssessment.model_json_schema(),
+        ),
+    )
+    raw = (resp.text or "").strip()
+    if not raw:
+        return False
+    parsed = SuggestCaptionsAssessment.model_validate_json(raw)
+    return bool(parsed.is_nightlife_related)
+
+
+def analyze_account_in_north_macedonia(
+    client: genai.Client,
+    *,
+    username: str,
+    full_name: str | None,
+    sample_captions: list[str],
+) -> bool:
+    """Gemini: does this account clearly belong to North Macedonia?"""
+    full_name = (full_name or "").strip()
+    caps = [c.strip() for c in sample_captions if c and str(c).strip()]
+    if not (full_name or caps):
+        return False
+    model_id = os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
+    parts_text = [
+        f"Username: @{username}",
+        f"Full name: {full_name or '-'}",
+    ]
+    if caps:
+        parts_text.append("Sample captions:")
+        for c in caps[:3]:
+            parts_text.append(f"- {c}")
+    prompt = "\n".join(parts_text)
+    contents = types.Content(
+        role="user",
+        parts=[types.Part(text=prompt)],
+    )
+    resp = client.models.generate_content(
+        model=model_id,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=MACEDONIA_SYSTEM,
+            response_mime_type="application/json",
+            response_json_schema=MacedoniaAssessment.model_json_schema(),
+        ),
+    )
+    raw = (resp.text or "").strip()
+    if not raw:
+        return False
+    parsed = MacedoniaAssessment.model_validate_json(raw)
+    return bool(parsed.is_in_north_macedonia)
+
+
 def rebuild_posts_flat(catalog: dict) -> None:
     posts_flat = []
     for un, block in (catalog.get("by_username") or {}).items():
@@ -485,9 +661,29 @@ def rebuild_posts_flat(catalog: dict) -> None:
                     "is_video": p.get("is_video"),
                     "media": p.get("media") or [],
                     "caption_analysis": p.get("caption_analysis"),
+                    "gemini_caption_status": p.get("gemini_caption_status"),
                 }
             )
     catalog["posts_flat"] = posts_flat
+
+
+def _write_catalog_json(catalog_path: Path, catalog: dict) -> None:
+    """Atomic write so you can open cloudinary_catalog.json mid-run and see latest posts."""
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = catalog_path.with_suffix(catalog_path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, catalog_path)
+
+
+def _count_posts_to_analyze(by_u: dict, force: bool) -> int:
+    n = 0
+    for _, block in by_u.items():
+        for post in block.get("posts") or []:
+            if not force and post.get("caption_analysis") is not None:
+                continue
+            n += 1
+    return n
 
 
 def run(
@@ -495,12 +691,23 @@ def run(
     force: bool,
     throttle_sec: float,
     username_filter: str | None = None,
+    mk_only: bool = False,
 ) -> None:
+    # So progress / [MK] lines show immediately in IDEs, Railway logs, and pipes (not only at exit).
+    try:
+        if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
     if not catalog_path.is_file():
         raise FileNotFoundError(f"Catalog not found: {catalog_path}")
 
     with open(catalog_path, encoding="utf-8") as f:
         catalog = json.load(f)
+
+    if not mk_only:
+        catalog.pop("mk_filter_log", None)
 
     by_u = catalog.get("by_username") or {}
     if username_filter:
@@ -512,16 +719,186 @@ def run(
             )
     client = genai.Client(api_key=load_api_key())
 
-    total = 0
+    total_posts_all = sum(len(b.get("posts") or []) for b in by_u.values())
+    total = _count_posts_to_analyze(by_u, force)
     done = 0
     skipped = 0
     errors = 0
+    cur = 0
+
+    if total > 0:
+        print("Caption analysis (Gemini)…")
+        if mk_only and not username_filter:
+            print(
+                f"  ({total} posts) MK ADDED/REMOVED lines run after captions finish — not during.",
+                flush=True,
+            )
 
     for username, block in by_u.items():
         for post in block.get("posts") or []:
-            total += 1
             if not force and post.get("caption_analysis") is not None:
+                post.setdefault("gemini_caption_status", "skipped")
                 skipped += 1
+                continue
+            cap = (post.get("caption") or "").strip()
+            cur += 1
+            pct = 100.0 * cur / total if total else 100.0
+            # One updating line; pad width so PowerShell / \\r does not leave junk on the line.
+            msg = (
+                f"Captions {pct:.1f}% ({cur}/{total}) @{username} "
+                f"post {post.get('post_index')}"
+            )
+            print("\r" + msg.ljust(96), end="", flush=True)
+            try:
+                post["caption_analysis"] = analyze_caption(
+                    client,
+                    cap,
+                    posted_at_iso=(post.get("timestamp") or None),
+                    media_post=post,
+                )
+                post.pop("caption_analysis_error", None)
+                post["gemini_caption_status"] = "ok"
+                done += 1
+            except Exception as e:
+                errors += 1
+                post["caption_analysis"] = None
+                post["caption_analysis_error"] = str(e)[:500]
+                post["gemini_caption_status"] = "error"
+                print(
+                    f"\nERR @{username} post {post.get('post_index')}: {e}",
+                    file=sys.stderr,
+                )
+            rebuild_posts_flat(catalog)
+            catalog["gemini_last_saved_at"] = datetime.now(timezone.utc).isoformat()
+            _write_catalog_json(catalog_path, catalog)
+            if throttle_sec > 0:
+                time.sleep(throttle_sec)
+
+    if total > 0:
+        print()
+
+    # Optionally drop accounts that are not clearly in North Macedonia.
+    removed_accounts: list[str] = []
+    if mk_only and username_filter:
+        print(
+            "Note: --mk-only is skipped when --username is set (run without -u for MK filter).",
+            flush=True,
+        )
+    if mk_only and not username_filter:
+        mk_list = list(by_u.items())
+        mk_n = len(mk_list)
+        if mk_n > 0:
+            print("North Macedonia filter (Gemini)…", flush=True)
+        catalog["mk_filter_log"] = []
+        filtered_by_u: dict[str, dict] = {}
+        if mk_n == 0:
+            catalog.pop("mk_filter_log", None)
+        for i, (username, block) in enumerate(mk_list, start=1):
+            prof = (block.get("profile") or {}) if isinstance(block.get("profile"), dict) else {}
+            full_name = prof.get("full_name") or prof.get("name")
+            posts = block.get("posts") or []
+            # Take up to 3 captions from recent posts.
+            caps: list[str] = []
+            for p in sorted(
+                posts,
+                key=lambda x: (x.get("timestamp") or "") or "",
+                reverse=True,
+            ):
+                cap = (p.get("caption") or "").strip()
+                if cap:
+                    caps.append(cap)
+                if len(caps) >= 3:
+                    break
+            try:
+                keep = analyze_account_in_north_macedonia(
+                    client,
+                    username=username,
+                    full_name=full_name,
+                    sample_captions=caps,
+                )
+            except Exception:
+                keep = False
+            if keep:
+                filtered_by_u[username] = block
+            else:
+                removed_accounts.append(username)
+            pct_mk = 100.0 * i / mk_n if mk_n else 100.0
+            result = "ADDED" if keep else "REMOVED"
+            print(
+                f"MK {pct_mk:.1f}% ({i}/{mk_n}) @{username} {result}",
+                flush=True,
+            )
+            catalog["mk_filter_log"].append(
+                {"username": username, "status": result}
+            )
+            catalog["gemini_last_saved_at"] = datetime.now(timezone.utc).isoformat()
+            _write_catalog_json(catalog_path, catalog)
+            if throttle_sec > 0:
+                time.sleep(throttle_sec)
+        if mk_n > 0:
+            for _u, blk in filtered_by_u.items():
+                blk["mk_filter_status"] = "ADDED"
+            catalog["by_username"] = filtered_by_u
+
+    rebuild_posts_flat(catalog)
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_catalog_json(catalog_path, catalog)
+
+    # Sync to database (Railway/local) for global runs.
+    if not username_filter:
+        try:
+            from catalog_db import sync_from_json
+        except ImportError:
+            pass
+        else:
+            sync_from_json(catalog)
+
+    line = (
+        f"\nWrote {catalog_path} | analyzed: {done} | skipped (had analysis): {skipped} | "
+        f"errors: {errors} | caption posts in catalog: {total_posts_all} | "
+        f"Gemini calls: {total}"
+    )
+    if username_filter:
+        line += f" | only @{username_filter}"
+    if removed_accounts:
+        line += f" | removed_non_mk_accounts: {', '.join(sorted(removed_accounts))}"
+    print(line)
+
+
+def run_for_username_db(
+    username: str,
+    force: bool,
+    throttle_sec: float,
+) -> None:
+    """Gemini caption analysis for one user; read/write Postgres only (no cloudinary_catalog.json)."""
+    from catalog_db import get_connection, upsert_post_row
+
+    want = (username or "").strip()
+    if not want:
+        raise ValueError("empty username")
+    client = genai.Client(api_key=load_api_key())
+    with closing(get_connection()) as conn:
+        r = conn.execute(
+            "SELECT username FROM accounts WHERE LOWER(username) = LOWER(%s) LIMIT 1",
+            (want,),
+        ).fetchone()
+        if not r:
+            raise ValueError(f"No account {username!r} in database")
+        un = r["username"]
+        rows = conn.execute(
+            "SELECT post_json FROM posts WHERE username = %s ORDER BY post_index NULLS LAST",
+            (un,),
+        ).fetchall()
+        total = len(rows)
+        done = 0
+        for row in rows:
+            pj = row["post_json"]
+            if isinstance(pj, str):
+                pj = json.loads(pj)
+            if not isinstance(pj, dict):
+                continue
+            post = pj
+            if not force and post.get("caption_analysis") is not None:
                 continue
             cap = (post.get("caption") or "").strip()
             try:
@@ -532,28 +909,32 @@ def run(
                     media_post=post,
                 )
                 post.pop("caption_analysis_error", None)
+                post["gemini_caption_status"] = "ok"
                 done += 1
-                print(f"OK @{username} post {post.get('post_index')}")
             except Exception as e:
-                errors += 1
                 post["caption_analysis"] = None
                 post["caption_analysis_error"] = str(e)[:500]
-                print(f"ERR @{username} post {post.get('post_index')}: {e}", file=sys.stderr)
+                post["gemini_caption_status"] = "error"
+                print(
+                    f"\nERR @{un} post {post.get('post_index')}: {e}",
+                    file=sys.stderr,
+                )
+            for attempt in range(8):
+                try:
+                    upsert_post_row(conn, un, post)
+                    conn.commit()
+                    break
+                except DeadlockDetected:
+                    conn.rollback()
+                    if attempt >= 7:
+                        raise
+                    time.sleep(0.04 * (2 ** min(attempt, 5)))
             if throttle_sec > 0:
                 time.sleep(throttle_sec)
-
-    rebuild_posts_flat(catalog)
-    catalog_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(catalog_path, "w", encoding="utf-8") as f:
-        json.dump(catalog, f, indent=2, ensure_ascii=False)
-
-    line = (
-        f"\nWrote {catalog_path} | analyzed: {done} | skipped (had analysis): {skipped} | "
-        f"errors: {errors} | posts seen: {total}"
+    print(
+        f"Caption analysis (Gemini, DB only) @{un} | posts={total} | analyzed={done}",
+        flush=True,
     )
-    if username_filter:
-        line += f" | only @{username_filter}"
-    print(line)
 
 
 def main() -> None:
@@ -583,6 +964,11 @@ def main() -> None:
         metavar="NAME",
         help="Only analyze posts for this Instagram account (e.g. bistro.komedija)",
     )
+    p.add_argument(
+        "--mk-only",
+        action="store_true",
+        help="After analysis, keep only accounts clearly in North Macedonia and sync DB.",
+    )
     args = p.parse_args()
     try:
         run(
@@ -590,6 +976,7 @@ def main() -> None:
             force=args.force,
             throttle_sec=args.throttle,
             username_filter=(args.username.strip() if args.username else None),
+            mk_only=args.mk_only,
         )
     except (ValueError, FileNotFoundError) as e:
         print(e, file=sys.stderr)

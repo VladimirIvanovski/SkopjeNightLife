@@ -32,7 +32,6 @@ from catalog_db import (
     suggest_get_active_job_for_ip,
     suggest_job_create,
     suggest_job_get,
-    suggest_repair_stale_jobs,
     suggest_global_monthly_remaining,
     suggest_global_monthly_try_consume,
     suggest_log_submission,
@@ -82,9 +81,42 @@ def event_start_skopje(post: dict) -> datetime | None:
     return datetime(d.year, d.month, d.day, 21, 0, 0, tzinfo=z)
 
 
+def event_end_skopje(post: dict) -> datetime | None:
+    """End in Europe/Skopje: AI end_time if parseable, else start + 2h."""
+    start = event_start_skopje(post) if isinstance(post, dict) else None
+    if not start:
+        return None
+    ca = post.get("caption_analysis")
+    if isinstance(ca, dict):
+        st = ca.get("end_time")
+        if st is not None:
+            s = str(st).strip()
+            if s and s.lower() != "null":
+                tm = _TIME_HM.match(s)
+                if tm:
+                    h, mi = int(tm.group(1)), int(tm.group(2))
+                    if 0 <= h <= 23 and 0 <= mi <= 59:
+                        return datetime(
+                            start.year,
+                            start.month,
+                            start.day,
+                            h,
+                            mi,
+                            0,
+                            tzinfo=start.tzinfo,
+                        )
+    return start + timedelta(hours=2)
+
+
 @app.template_filter("event_countdown_iso")
 def event_countdown_iso_filter(post):
     dt = event_start_skopje(post) if isinstance(post, dict) else None
+    return dt.isoformat() if dt else ""
+
+
+@app.template_filter("event_end_iso")
+def event_end_iso_filter(post):
+    dt = event_end_skopje(post) if isinstance(post, dict) else None
     return dt.isoformat() if dt else ""
 
 
@@ -424,7 +456,7 @@ def _suggest_common_template_kwargs(
 @app.route("/suggest", methods=["GET", "POST"])
 def suggest_account():
     """User-submitted Instagram username is enqueued; worker processes scrape+Gemini."""
-    suggest_repair_stale_jobs()
+    # Stale-job repair runs in worker_suggest only — avoids deadlocks with concurrent claims.
     ip_h = client_ip_hash(
         request.remote_addr,
         request.headers.get("X-Forwarded-For"),

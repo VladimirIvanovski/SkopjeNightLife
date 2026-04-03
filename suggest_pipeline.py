@@ -1,14 +1,15 @@
 """
-User-submitted Instagram username → scrape (RapidAPI + Cloudinary) → Gemini captions + bio check
-→ merge catalog, sync DB, append scrape_usernames.txt.
+User-submitted Instagram username → scrape (RapidAPI + Cloudinary) → Postgres upsert
+→ Gemini per-post captions (DB only) → North Macedonia check → nightlife accept / fallbacks.
 
-Called from gallery_app POST /suggest. Requires RAPIDAPI_KEY, Cloudinary env, GEMINI_API_KEY.
+Suggest flow does not read or write cloudinary_catalog.json; gallery reads from Postgres.
+
+Called from gallery_app POST /suggest and worker_suggest. Requires RAPIDAPI_KEY, Cloudinary env, GEMINI_API_KEY, DATABASE_URL.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import sys
@@ -19,8 +20,6 @@ _log = logging.getLogger(__name__)
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent
-BACKEND_DATA = ROOT / "back-end" / "data"
-CATALOG_PATH = BACKEND_DATA / "cloudinary_catalog.json"
 ENV_SHARED = ROOT / "back-end" / "database-adding-content" / ".env"
 SCRAPING_DIR = ROOT / "back-end" / "scraping"
 AI_DIR = ROOT / "back-end" / "AI-Summarization"
@@ -68,7 +67,12 @@ def process_user_suggestion(
     Returns dict: ok (bool), message (str), username (str|None), did_block (bool).
     On rejected suggestion (not nightlife), IP is blocked via catalog_db.
     """
-    from catalog_db import sync_from_json, username_in_catalog
+    from catalog_db import (
+        delete_account_and_posts,
+        fetch_posts_for_username,
+        upsert_account_and_posts,
+        username_in_catalog,
+    )
 
     if not ip_hash:
         return {
@@ -78,25 +82,19 @@ def process_user_suggestion(
             "did_block": False,
         }
 
-    # Cooldown/pending enforcement is handled before enqueue in the web route.
-
     _load_env()
     _ensure_import_paths()
 
     from analyze_captions_gemini import (  # type: ignore  # noqa: E402
-        analyze_biography_nightlife,
+        analyze_account_in_north_macedonia,
+        analyze_profile_metadata_for_suggest,
+        analyze_sample_captions_for_suggest,
         load_api_key,
-        run as gemini_run,
+        run_for_username_db,
     )
     from google import genai  # type: ignore  # noqa: E402
     from scrape_rapidapi_cloudinary import (  # type: ignore  # noqa: E402
-        SCRAPE_USERNAMES_TXT,
-        ScrapeRow,
-        build_posts_flat,
         load_cloudinary,
-        load_existing_catalog,
-        load_scrape_rows,
-        save_scrape_rows,
         scrape_user_to_cloudinary,
         slugify_username,
     )
@@ -169,36 +167,28 @@ def process_user_suggestion(
             "did_block": False,
         }
 
-    catalog = load_existing_catalog(CATALOG_PATH)
-    by_u = catalog.get("by_username") or {}
-    if not isinstance(by_u, dict):
-        by_u = {}
-    by_u[canonical] = {
-        "profile": prof,
-        "posts": block["posts"],
-        "last_scraped_at": block["last_scraped_at"],
-    }
-    catalog["by_username"] = by_u
-    catalog["posts_flat"] = build_posts_flat(by_u)
-    CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(CATALOG_PATH, "w", encoding="utf-8") as f:
-        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    try:
+        upsert_account_and_posts(canonical, prof, block.get("posts") or [])
+    except Exception:
+        _log.exception("upsert_account_and_posts failed canonical=%r", canonical)
+        return {
+            "ok": False,
+            "message": "Базата не е достапна (DATABASE_URL). Обиди се подоцна.",
+            "username": canonical,
+            "did_block": False,
+        }
 
-    def _rollback_catalog_user() -> None:
-        cf = load_existing_catalog(CATALOG_PATH)
-        bu = dict(cf.get("by_username") or {})
-        bu.pop(canonical, None)
-        cf["by_username"] = bu
-        cf["posts_flat"] = build_posts_flat(bu)
-        with open(CATALOG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cf, f, indent=2, ensure_ascii=False)
-        sync_from_json()
+    def _rollback_db_user() -> None:
+        try:
+            delete_account_and_posts(canonical)
+        except Exception:
+            _log.exception("rollback delete_account_and_posts failed canonical=%r", canonical)
 
     try:
         gkey = load_api_key()
         client = genai.Client(api_key=gkey)
     except ValueError as e:
-        _rollback_catalog_user()
+        _rollback_db_user()
         return {
             "ok": False,
             "message": f"Gemini не е достапен на серверот: {e}",
@@ -207,17 +197,12 @@ def process_user_suggestion(
         }
 
     try:
-        _log.debug("gemini run start filter=%r", canonical)
-        gemini_run(
-            CATALOG_PATH.resolve(),
-            force=True,
-            throttle_sec=0.25,
-            username_filter=canonical,
-        )
-        _log.debug("gemini run done filter=%r", canonical)
+        _log.debug("gemini DB run start filter=%r", canonical)
+        run_for_username_db(canonical, force=True, throttle_sec=0.25)
+        _log.debug("gemini DB run done filter=%r", canonical)
     except Exception:
-        _log.exception("gemini run failed filter=%r", canonical)
-        _rollback_catalog_user()
+        _log.exception("gemini run_for_username_db failed filter=%r", canonical)
+        _rollback_db_user()
         return {
             "ok": False,
             "message": "Анализа на објавите не успеа. Обиди се подоцна или контактирај нè.",
@@ -225,50 +210,108 @@ def process_user_suggestion(
             "did_block": False,
         }
 
-    with open(CATALOG_PATH, encoding="utf-8") as f:
-        catalog = json.load(f)
-    block_data = (catalog.get("by_username") or {}).get(canonical) or {}
-    posts = block_data.get("posts") or []
+    posts = fetch_posts_for_username(canonical)
+
+    def _recent_sample_captions(n: int = 3) -> list[str]:
+        """Same ordering as weekly --mk-only: newest posts first."""
+        out: list[str] = []
+        for post in sorted(
+            posts,
+            key=lambda x: (x.get("timestamp") or "") or "",
+            reverse=True,
+        ):
+            if not isinstance(post, dict):
+                continue
+            c = (post.get("caption") or "").strip()
+            if c:
+                out.append(c)
+            if len(out) >= n:
+                break
+        return out
+
+    SUGGEST_REJECT_NOT_MK = (
+        "Профилот не изгледа локално за Скопје / Северна Македонија (или нема доволно докази во "
+        "името или објавите). Следните 12 часа не можеш да предложиш друг профил."
+    )
+    sample_caps = _recent_sample_captions(3)
+    try:
+        is_mk = analyze_account_in_north_macedonia(
+            client,
+            username=canonical,
+            full_name=str(prof.get("full_name") or "").strip() or None,
+            sample_captions=sample_caps,
+        )
+    except Exception:
+        _log.exception("analyze_account_in_north_macedonia failed canonical=%r", canonical)
+        is_mk = False
+    if not is_mk:
+        _log.warning(
+            "suggest rejected not_mk canonical=%r sample_caption_count=%s",
+            canonical,
+            len(sample_caps),
+        )
+        _rollback_db_user()
+        return {
+            "ok": False,
+            "message": SUGGEST_REJECT_NOT_MK,
+            "username": canonical,
+            "did_block": False,
+        }
+
+    def _post_qualifies_for_suggest(ca: dict) -> bool:
+        if ca.get("listing_type") == "nightlife_event":
+            return True
+        if ca.get("event_date") or ca.get("event_day"):
+            return True
+        perf = ca.get("performers") or []
+        if isinstance(perf, list) and len(perf) > 0:
+            return True
+        return False
 
     nightlife_posts = 0
     for post in posts:
         ca = post.get("caption_analysis")
-        if isinstance(ca, dict) and ca.get("listing_type") == "nightlife_event":
+        if isinstance(ca, dict) and _post_qualifies_for_suggest(ca):
             nightlife_posts += 1
 
-    bio = (
-        str(prof.get("bio") or prof.get("biography") or "").strip()
+    SUGGEST_REJECT_MSG = (
+        "Овој профил не одговара на критериумите за ноќен излегување / бар / кафана / настани "
+        "(објави или профил). Следните 12 часа не можеш да предложиш друг профил."
     )
 
     if nightlife_posts == 0:
-        try:
-            bio_ok = analyze_biography_nightlife(client, bio)
-        except Exception:
-            bio_ok = False
-        if not bio_ok:
-            # Rejected (counts as an attempt; cooldown window is handled via suggest_submit_log).
-            by_u = dict(catalog.get("by_username") or {})
-            by_u.pop(canonical, None)
-            catalog["by_username"] = by_u
-            catalog["posts_flat"] = build_posts_flat(by_u)
-            with open(CATALOG_PATH, "w", encoding="utf-8") as f:
-                json.dump(catalog, f, indent=2, ensure_ascii=False)
-            sync_from_json()
+        accepted = False
+        if sample_caps:
+            try:
+                accepted = analyze_sample_captions_for_suggest(client, sample_caps)
+            except Exception:
+                _log.exception("analyze_sample_captions_for_suggest failed canonical=%r", canonical)
+                accepted = False
+        if not accepted:
+            try:
+                accepted = analyze_profile_metadata_for_suggest(
+                    client,
+                    username=canonical,
+                    full_name=str(prof.get("full_name") or "").strip() or None,
+                )
+            except Exception:
+                _log.exception("analyze_profile_metadata_for_suggest failed canonical=%r", canonical)
+                accepted = False
+        if not accepted:
+            _log.warning(
+                "suggest rejected canonical=%r nightlife_posts=0 sample_caption_count=%s",
+                canonical,
+                len(sample_caps),
+            )
+            _rollback_db_user()
             return {
                 "ok": False,
-                "message": "Овој профил не изгледа како ноќен клуб/бар/настани — нема доволно докази во објавите или во биографијата. Следните 12 часа не можеш да предложиш друг профил",
+                "message": SUGGEST_REJECT_MSG,
                 "username": canonical,
                 "did_block": False,
             }
 
-    rows = load_scrape_rows(SCRAPE_USERNAMES_TXT)
-    if not any(r.username.lower() == handle.lower() for r in rows):
-        rows.append(ScrapeRow(username=handle))
-        save_scrape_rows(SCRAPE_USERNAMES_TXT, rows)
-
-    _log.debug("sync_from_json after accept canonical=%r", canonical)
-    sync_from_json()
-
+    _log.debug("suggest accept canonical=%r (Postgres only, no JSON sync)", canonical)
     return {
         "ok": True,
         "message": "Додадено.",

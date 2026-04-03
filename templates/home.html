@@ -41,5 +41,6 @@
     {% endif %}
   </main>
   {% include '_event_countdown_script.html' %}
+  {% if total_events > 0 %}{% include '_saved_events_planner.html' %}{% endif %}
 </body>
 </html>

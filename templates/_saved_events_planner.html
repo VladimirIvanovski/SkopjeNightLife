@@ -1,0 +1,386 @@
+{# Client-only: localStorage + .ics download. Include on pages with event cards. #}
+<style>
+  .save-event-wrap {
+    position: static;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin: 0;
+    padding: 0.55rem 0.95rem;
+    min-height: 2.5rem;
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    color: #fff;
+    background: linear-gradient(
+      145deg,
+      rgba(255, 61, 154, 0.22) 0%,
+      rgba(157, 124, 255, 0.12) 55%,
+      rgba(18, 16, 31, 0.65) 100%
+    );
+    border: 1px solid rgba(255, 61, 154, 0.55);
+    border-radius: 12px;
+    box-shadow:
+      0 0 0 1px rgba(157, 124, 255, 0.15),
+      0 4px 14px rgba(0, 0, 0, 0.35),
+      0 0 28px rgba(255, 61, 154, 0.18);
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    white-space: nowrap;
+    transition: background 0.2s, border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+  }
+  .save-event-wrap:hover:not(.save-event-wrap--disabled) {
+    background: linear-gradient(
+      145deg,
+      rgba(255, 61, 154, 0.32) 0%,
+      rgba(157, 124, 255, 0.2) 50%,
+      rgba(24, 18, 42, 0.75) 100%
+    );
+    border-color: rgba(255, 61, 154, 0.75);
+    box-shadow:
+      0 0 0 1px rgba(255, 61, 154, 0.25),
+      0 6px 20px rgba(0, 0, 0, 0.4),
+      0 0 36px rgba(255, 61, 154, 0.28);
+    transform: translateY(-1px);
+  }
+  .save-event-wrap:active:not(.save-event-wrap--disabled) {
+    transform: translateY(0);
+  }
+  .save-event-wrap:has(.save-event-cb:checked) {
+    background: linear-gradient(
+      145deg,
+      rgba(255, 61, 154, 0.38) 0%,
+      rgba(157, 124, 255, 0.26) 45%,
+      rgba(18, 16, 31, 0.85) 100%
+    );
+    border-color: rgba(255, 61, 154, 0.85);
+    box-shadow:
+      0 0 0 1px rgba(255, 61, 154, 0.35),
+      0 4px 18px rgba(0, 0, 0, 0.45),
+      0 0 40px rgba(255, 61, 154, 0.35),
+      inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  }
+  .save-event-wrap .save-event-label {
+    font-size: inherit;
+    font-weight: 800;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  }
+  .save-event-wrap input {
+    width: 1.28rem;
+    height: 1.28rem;
+    margin: 0;
+    flex-shrink: 0;
+    accent-color: var(--neon-pink, #ff3d9a);
+    cursor: pointer;
+  }
+  .save-event-wrap--disabled {
+    opacity: 0.85;
+    cursor: not-allowed;
+    color: var(--muted, #9b92b0);
+    background: linear-gradient(180deg, rgba(18, 16, 31, 0.9), rgba(12, 10, 22, 0.95));
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    transform: none;
+  }
+  .save-event-wrap--disabled:hover {
+    background: linear-gradient(180deg, rgba(18, 16, 31, 0.9), rgba(12, 10, 22, 0.95));
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    transform: none;
+  }
+  .save-event-wrap--disabled .save-event-label {
+    text-shadow: none;
+    font-weight: 700;
+  }
+  .save-event-wrap--disabled input {
+    cursor: not-allowed;
+  }
+  .saved-events-dock {
+    position: fixed;
+    right: 12px;
+    bottom: 12px;
+    z-index: 200;
+    max-width: min(100vw - 24px, 18rem);
+    padding: 0.75rem 0.85rem;
+    font-size: 0.8125rem;
+    line-height: 1.4;
+    color: var(--text, #f5f2fc);
+    background: rgba(18, 16, 31, 0.94);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 14px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  }
+  .saved-events-dock[hidden] {
+    display: none !important;
+  }
+  .saved-events-dock strong {
+    display: block;
+    margin-bottom: 0.35rem;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: rgba(255, 255, 255, 0.55);
+  }
+  .saved-events-dock .saved-events-count {
+    font-weight: 800;
+    color: var(--neon-pink, #ff3d9a);
+  }
+  .saved-events-dock p {
+    margin: 0 0 0.6rem;
+    font-size: 0.75rem;
+    color: rgba(212, 204, 232, 0.85);
+  }
+  .saved-events-dock .saved-events-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+  }
+  .saved-events-dock button {
+    font: inherit;
+    font-weight: 700;
+    padding: 0.5rem 0.65rem;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 61, 154, 0.4);
+    background: linear-gradient(135deg, rgba(255, 61, 154, 0.25), rgba(157, 124, 255, 0.2));
+    color: var(--text, #f5f2fc);
+    cursor: pointer;
+  }
+  .saved-events-dock button:hover {
+    filter: brightness(1.08);
+  }
+  .saved-events-dock button.secondary {
+    border-color: rgba(255, 255, 255, 0.15);
+    background: rgba(255, 255, 255, 0.06);
+    font-weight: 600;
+  }
+  @media (max-width: 480px) {
+    .saved-events-dock {
+      right: 8px;
+      bottom: 8px;
+      font-size: 0.78rem;
+    }
+  }
+</style>
+<div class="saved-events-dock" id="saved-events-dock" hidden>
+  <strong>Зачувани настани</strong>
+  <p><span class="saved-events-count" id="saved-events-count">0</span> со датум за календар · зачувано само на овој уред</p>
+  <div class="saved-events-actions">
+    <button type="button" id="saved-events-ics" title="Преземи датотека .ics, па во Google Calendar: Поставки → Увези и подеси. Apple Calendar: Фајл → Увези.">Преземи .ics (Google / Apple)</button>
+    <button type="button" class="secondary" id="saved-events-clear">Исчисти избор</button>
+  </div>
+</div>
+<script>
+(function () {
+  var STORAGE_V2 = 'nls_saved_events_v2';
+  var STORAGE_V1 = 'nls_saved_event_ids_v1';
+  var dock = document.getElementById('saved-events-dock');
+  var countEl = document.getElementById('saved-events-count');
+  var btnIcs = document.getElementById('saved-events-ics');
+  var btnClear = document.getElementById('saved-events-clear');
+  if (!dock || !countEl || !btnIcs || !btnClear) return;
+
+  function payloadFromArticle(art) {
+    var id = art.getAttribute('data-event-id');
+    var start = art.getAttribute('data-event-start');
+    if (!id || !start) return null;
+    return {
+      id: id,
+      title: art.getAttribute('data-event-title') || 'Настан',
+      start: start,
+      end: art.getAttribute('data-event-end') || '',
+      instagram: art.getAttribute('data-instagram-url') || ''
+    };
+  }
+
+  function loadEvents() {
+    try {
+      var raw = localStorage.getItem(STORAGE_V2);
+      var a = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(a)) return [];
+      return a.filter(function (x) {
+        return x && typeof x.id === 'string' && x.id && typeof x.start === 'string' && x.start;
+      });
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveEvents(events) {
+    try {
+      localStorage.setItem(STORAGE_V2, JSON.stringify(events));
+    } catch (e) {}
+  }
+
+  function upsertEvent(ev) {
+    var list = loadEvents().filter(function (x) { return x.id !== ev.id; });
+    list.push(ev);
+    saveEvents(list);
+  }
+
+  function removeEvent(id) {
+    saveEvents(loadEvents().filter(function (x) { return x.id !== id; }));
+  }
+
+  function migrateV1FromDom() {
+    if (localStorage.getItem(STORAGE_V2)) {
+      try { localStorage.removeItem(STORAGE_V1); } catch (e) {}
+      return;
+    }
+    try {
+      var raw = localStorage.getItem(STORAGE_V1);
+      var ids = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(ids) || !ids.length) return;
+      var set = {};
+      ids.forEach(function (id) { if (typeof id === 'string' && id) set[id] = true; });
+      var out = loadEvents();
+      var seen = {};
+      out.forEach(function (x) { seen[x.id] = true; });
+      collectArticles().forEach(function (art) {
+        var id = art.getAttribute('data-event-id');
+        if (!id || !set[id]) return;
+        var p = payloadFromArticle(art);
+        if (p && !seen[p.id]) {
+          out.push(p);
+          seen[p.id] = true;
+        }
+      });
+      saveEvents(out);
+      localStorage.removeItem(STORAGE_V1);
+    } catch (e) {}
+  }
+
+  function getArticleForInput(el) {
+    if (!el || !el.classList || !el.classList.contains('save-event-cb')) return null;
+    return el.closest('article.item') || null;
+  }
+
+  function articleHasStart(art) {
+    return art && art.getAttribute('data-event-start');
+  }
+
+  function collectArticles() {
+    return document.querySelectorAll('article.item[data-event-id]');
+  }
+
+  function syncCheckboxesFromStorage() {
+    migrateV1FromDom();
+    var byId = {};
+    loadEvents().forEach(function (x) { byId[x.id] = true; });
+    collectArticles().forEach(function (art) {
+      var id = art.getAttribute('data-event-id');
+      var cb = art.querySelector('.save-event-cb');
+      if (!cb || !id || !articleHasStart(art)) return;
+      cb.checked = !!byId[id];
+    });
+    updateDock();
+  }
+
+  function updateDock() {
+    var n = loadEvents().length;
+    countEl.textContent = String(n);
+    dock.hidden = n === 0;
+  }
+
+  document.addEventListener('change', function (e) {
+    var t = e.target;
+    if (!t || !t.classList || !t.classList.contains('save-event-cb')) return;
+    var art = getArticleForInput(t);
+    if (!art) return;
+    var id = art.getAttribute('data-event-id');
+    if (!id || !articleHasStart(art)) {
+      t.checked = false;
+      return;
+    }
+    var p = payloadFromArticle(art);
+    if (!p) {
+      t.checked = false;
+      return;
+    }
+    if (t.checked) upsertEvent(p);
+    else removeEvent(id);
+    updateDock();
+  });
+
+  btnClear.addEventListener('click', function () {
+    saveEvents([]);
+    collectArticles().forEach(function (art) {
+      var cb = art.querySelector('.save-event-cb');
+      if (cb) cb.checked = false;
+    });
+    updateDock();
+  });
+
+  function escapeICS(s) {
+    return String(s)
+      .replace(/\\/g, '\\\\')
+      .replace(/;/g, '\\;')
+      .replace(/,/g, '\\,')
+      .replace(/\n/g, '\\n');
+  }
+
+  function fmtUtc(d) {
+    return d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  }
+
+  function parseIso(s) {
+    try {
+      var d = new Date(s);
+      if (isNaN(d.getTime())) return null;
+      return d;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function buildIcs(events) {
+    var lines = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//NightLife Skopje//mk',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH'
+    ];
+    var stamp = fmtUtc(new Date());
+    events.forEach(function (ev) {
+      var ds = parseIso(ev.start);
+      if (!ds) return;
+      var de = parseIso(ev.end);
+      if (!de || de <= ds) de = new Date(ds.getTime() + 2 * 60 * 60 * 1000);
+      var uidBase = String(ev.id).replace(/[^a-zA-Z0-9._-]/g, '_');
+      var title = ev.title || 'Настан';
+      var desc = ev.instagram ? ('Instagram: ' + ev.instagram) : '';
+      lines.push('BEGIN:VEVENT');
+      lines.push('UID:' + uidBase + '@nightlifeskopje.local');
+      lines.push('DTSTAMP:' + stamp);
+      lines.push('DTSTART:' + fmtUtc(ds));
+      lines.push('DTEND:' + fmtUtc(de));
+      lines.push('SUMMARY:' + escapeICS(title));
+      if (desc) lines.push('DESCRIPTION:' + escapeICS(desc));
+      lines.push('END:VEVENT');
+    });
+    lines.push('END:VCALENDAR');
+    return lines.join('\r\n');
+  }
+
+  btnIcs.addEventListener('click', function () {
+    var events = loadEvents();
+    if (!events.length) return;
+    var ics = buildIcs(events);
+    var blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'nightlife-skopje-nastani.ics';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+  });
+
+  window.NLSyncSavedEvents = syncCheckboxesFromStorage;
+  syncCheckboxesFromStorage();
+})();
+</script>

@@ -1,4 +1,4 @@
-﻿.venv/
+.venv/
 __pycache__/
 **/__pycache__/
 *.pyc
@@ -8,3 +8,5 @@ back-end/data/nightlife_catalog.db
 back-end/data/*.lock
 .cursor/
 .idea/
+# Local RapidAPI response dumps (debug)
+back-end/scraping/rapidapi_dump*.json

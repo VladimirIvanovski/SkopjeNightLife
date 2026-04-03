@@ -8,17 +8,17 @@
   }
   .filter-bar .filter-panel-inner {
     padding: 1.25rem 1.35rem 1.35rem;
-    border-radius: 18px;
-    border: 1px solid rgba(255, 45, 146, 0.22);
+    border-radius: var(--radius, 20px);
+    border: 1px solid rgba(255, 61, 154, 0.22);
     background: linear-gradient(
       165deg,
-      rgba(18, 16, 28, 0.92) 0%,
-      rgba(30, 22, 45, 0.75) 50%,
-      rgba(18, 16, 28, 0.88) 100%
+      rgba(18, 16, 31, 0.94) 0%,
+      rgba(24, 18, 42, 0.78) 50%,
+      rgba(18, 16, 31, 0.9) 100%
     );
     box-shadow:
-      0 4px 28px rgba(0, 0, 0, 0.45),
-      0 0 0 1px rgba(139, 92, 255, 0.12),
+      0 4px 32px rgba(0, 0, 0, 0.5),
+      0 0 0 1px rgba(157, 124, 255, 0.1),
       inset 0 1px 0 rgba(255, 255, 255, 0.06);
   }
   .filter-bar .filter-title {
@@ -75,8 +75,8 @@
   .filter-bar .filter-field select:focus,
   .filter-bar .filter-field input:focus {
     outline: none;
-    border-color: rgba(255, 45, 146, 0.55);
-    box-shadow: 0 0 0 3px rgba(139, 92, 255, 0.2);
+    border-color: rgba(255, 61, 154, 0.55);
+    box-shadow: 0 0 0 3px rgba(157, 124, 255, 0.22);
   }
   .filter-bar .filter-checkbox {
     display: flex;
@@ -94,7 +94,7 @@
   .filter-bar .filter-checkbox input {
     width: 1.1rem;
     height: 1.1rem;
-    accent-color: #ff2d92;
+    accent-color: #ff3d9a;
     cursor: pointer;
   }
   .filter-bar .filter-toolbar {
@@ -122,12 +122,12 @@
     transition: border-color 0.15s, box-shadow 0.15s;
   }
   .filter-bar .filter-chip:hover {
-    border-color: rgba(255, 45, 146, 0.45);
-    box-shadow: 0 0 16px rgba(255, 45, 146, 0.15);
+    border-color: rgba(255, 61, 154, 0.45);
+    box-shadow: 0 0 20px rgba(255, 61, 154, 0.14);
   }
   .filter-bar .filter-chip[aria-expanded="true"] {
-    border-color: rgba(139, 92, 255, 0.55);
-    background: rgba(139, 92, 255, 0.14);
+    border-color: rgba(157, 124, 255, 0.5);
+    background: rgba(157, 124, 255, 0.12);
   }
   .filter-bar .filter-chip-value {
     font-weight: 500;
@@ -151,12 +151,12 @@
     font-weight: 700;
     padding: 0.55rem 1.35rem;
     min-height: 2.75rem;
-    border-radius: 12px;
-    border: 1px solid rgba(255, 45, 146, 0.5);
-    background: linear-gradient(135deg, rgba(255, 45, 146, 0.35), rgba(139, 92, 255, 0.28));
+    border-radius: var(--radius-sm, 12px);
+    border: 1px solid rgba(255, 61, 154, 0.45);
+    background: linear-gradient(135deg, rgba(255, 61, 154, 0.32), rgba(157, 124, 255, 0.26));
     color: var(--text);
     cursor: pointer;
-    box-shadow: 0 4px 18px rgba(255, 45, 146, 0.15);
+    box-shadow: 0 4px 22px rgba(255, 61, 154, 0.14);
   }
   .filter-bar .filter-form button[type="submit"]:hover {
     filter: brightness(1.08);
@@ -192,16 +192,16 @@
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
     border-radius: 12px;
     border: 1px solid rgba(255, 255, 255, 0.1);
-    background: #12101c;
+    background: var(--surface, #12101f);
   }
   .filter-bar .flatpickr-day.selected,
   .filter-bar .flatpickr-day.startRange,
   .filter-bar .flatpickr-day.endRange {
-    background: linear-gradient(135deg, #ff2d92, #8b5cff);
+    background: linear-gradient(135deg, #ff3d9a, #9d7cff);
     border-color: transparent;
   }
   .filter-bar .flatpickr-day.inRange {
-    background: rgba(139, 92, 255, 0.28);
+    background: rgba(157, 124, 255, 0.26);
     border-color: transparent;
     box-shadow: none;
   }
@@ -211,6 +211,18 @@
   .filter-bar .flatpickr-current-month .flatpickr-monthDropdown-months,
   .filter-bar .flatpickr-current-month input.cur-year {
     font-weight: 600;
+  }
+  @media (max-width: 640px) {
+    .filter-bar.filter-panel-wrap {
+      margin-bottom: 1rem;
+    }
+    .filter-bar .filter-panel-inner {
+      padding: 0.85rem 0.75rem 0.95rem;
+    }
+    .filter-bar .filter-title {
+      font-size: 0.95rem;
+      margin-bottom: 0.65rem;
+    }
   }
 </style>
 <section class="filter-bar filter-panel-wrap" id="main-filters-panel" aria-label="Филтри">

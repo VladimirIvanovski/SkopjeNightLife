@@ -13,3 +13,21 @@
     </nav>
   </div>
 </header>
+<script>
+(function () {
+  var h = document.querySelector('header.top.site-header');
+  if (!h || !window.matchMedia) return;
+  var mq = window.matchMedia('(max-width: 640px)');
+  function tick() {
+    if (!mq.matches) {
+      h.classList.remove('header-scrolled');
+      return;
+    }
+    h.classList.toggle('header-scrolled', window.scrollY > 10);
+  }
+  window.addEventListener('scroll', tick, { passive: true });
+  if (mq.addEventListener) mq.addEventListener('change', tick);
+  else if (mq.addListener) mq.addListener(tick);
+  tick();
+})();
+</script>

@@ -3,6 +3,9 @@ Background worker: processes queued /suggest jobs sequentially.
 
 Run this as a separate Railway service/worker (same repo) so web requests stay fast.
 
+Railway: the worker MUST use the same Postgres as gallery_app (same DATABASE_URL or
+DATABASE_PUBLIC_URL). If they differ, jobs enqueue on one DB and the worker never sees them.
+
 Logs: WARNING+ by default (errors only). Set SUGGEST_WORKER_VERBOSE=1 for INFO (idle, job lifecycle).
 """
 
@@ -35,6 +38,8 @@ logging.basicConfig(
 log = logging.getLogger("suggest_worker")
 
 _IDLE_LOG_EVERY = 15
+# Stale-job repair competes with other workers / posts writes; don't run every 2s loop tick.
+_REPAIR_INTERVAL_SEC = 20.0
 
 
 def _log_db_target() -> None:
@@ -49,16 +54,43 @@ def _log_db_target() -> None:
         log.info("DATABASE_URL is set (could not parse for log)")
 
 
+def _print_db_target_always() -> None:
+    """Stdout line on every start — visible in Railway even when log level is WARNING-only."""
+    if not (DATABASE_URL or "").strip():
+        print(
+            "suggest_worker: FATAL no DATABASE_URL or DATABASE_PUBLIC_URL — "
+            "copy the same Postgres URL as gallery_app.",
+            flush=True,
+        )
+        return
+    try:
+        u = urlparse(DATABASE_URL)
+        name = (u.path or "").replace("/", "", 1).split("/")[0] or "?"
+        print(
+            f"suggest_worker: Postgres host={u.hostname!s} database={name!s} "
+            "(must match gallery_app web service)",
+            flush=True,
+        )
+    except Exception:
+        print("suggest_worker: DATABASE_URL set but could not parse host/database", flush=True)
+
+
 def main() -> None:
+    _print_db_target_always()
     if _VERBOSE:
         log.info("starting (verbose mode)")
         _log_db_target()
     ensure_database()
     idle_count = 0
+    # So the first loop iteration runs stale repair immediately.
+    last_repair = time.monotonic() - _REPAIR_INTERVAL_SEC
     while True:
-        n_stale = suggest_repair_stale_jobs()
-        if n_stale and _VERBOSE:
-            log.info("repaired %s stale suggest job(s)", n_stale)
+        now = time.monotonic()
+        if now - last_repair >= _REPAIR_INTERVAL_SEC:
+            last_repair = now
+            n_stale = suggest_repair_stale_jobs()
+            if n_stale and _VERBOSE:
+                log.info("repaired %s stale suggest job(s)", n_stale)
 
         job = suggest_job_claim_next()
         if not job:
