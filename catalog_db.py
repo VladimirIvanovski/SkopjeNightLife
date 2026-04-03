@@ -1051,6 +1051,10 @@ def _date_clause(
     return " AND " + " AND ".join(cond), args
 
 
+# Feed: hide Gemini-tagged menu/non-event posts (column mirrors caption_analysis.listing_type on upsert).
+_EXCLUDE_NOT_NIGHTLIFE_SQL = " AND p.listing_type IS DISTINCT FROM 'not_nightlife'"
+
+
 def user_blocks_from_db(
     date_from: date | None = None,
     date_to: date | None = None,
@@ -1061,7 +1065,7 @@ def user_blocks_from_db(
     sql = (
         "SELECT p.username, p.post_json, a.profile_json FROM posts p "
         "JOIN accounts a ON a.username = p.username "
-        "WHERE TRUE" + ds + hs + " ORDER BY LOWER(p.username), p.posted_at DESC"
+        "WHERE TRUE" + _EXCLUDE_NOT_NIGHTLIFE_SQL + ds + hs + " ORDER BY LOWER(p.username), p.posted_at DESC"
     )
     with closing(get_connection()) as conn:
         rows = conn.execute(sql, dargs + hargs).fetchall()
@@ -1163,9 +1167,9 @@ def _where_visible_and_filters(
     rs, rargs = _role_clause(performer_role)
     ss, sargs = _search_clause(search)
     hs, hargs = _hidden_exclude_posts_sql("p")
-    # Include all posts (ignore posts.visible); use post_visible_on_site only when syncing JSON.
+    # Hide not_nightlife (posts.listing_type); NULL / nightlife_event still show.
     return (
-        " WHERE TRUE" + ds + ps + ws + us + rs + ss + hs,
+        " WHERE TRUE" + _EXCLUDE_NOT_NIGHTLIFE_SQL + ds + ps + ws + us + rs + ss + hs,
         dargs + pargs + wargs + uargs + rargs + sargs + hargs,
     )
 
@@ -1299,7 +1303,7 @@ def fetch_flat_events_filtered(
     search: str | None = None,
 ) -> tuple[list[dict], int]:
     """
-    Flat list of posts with at least one image/video URL in post_json.media (not filtered by posts.visible).
+    Flat list of posts with at least one image/video URL; excludes listing_type = not_nightlife.
     Sort: upcoming/today with event_date first (soonest date), then like_count;
     past dates and missing event_date last (Поминат / posted-only).
     Each entry: username, instagram_handle, display_name, profile_full_name, post, media.
