@@ -25,7 +25,9 @@ import secrets
 from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory, session, url_for
 
 from catalog_db import (
+    VENUE_CATEGORY_FILTER_VALUES,
     account_exists,
+    resolved_venue_category_slug,
     ensure_database,
     fetch_flat_events_filtered,
     list_usernames,
@@ -111,10 +113,27 @@ _TIME_HM = re.compile(r"^\s*(\d{1,2})\s*:\s*(\d{2})\s*$")
 _EVENT_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
+def _caption_analysis_dict_from_post(post: dict | None) -> dict | None:
+    if not isinstance(post, dict):
+        return None
+    ca = post.get("caption_analysis")
+    if ca is None:
+        return None
+    if isinstance(ca, dict):
+        return ca
+    if isinstance(ca, str) and ca.strip():
+        try:
+            o = json.loads(ca)
+        except json.JSONDecodeError:
+            return None
+        return o if isinstance(o, dict) else None
+    return None
+
+
 def event_start_skopje(post: dict) -> datetime | None:
     """Naive/local-aware start in Europe/Skopje from AI event_date + start_time (default 21:00)."""
-    ca = post.get("caption_analysis")
-    if not isinstance(ca, dict):
+    ca = _caption_analysis_dict_from_post(post)
+    if not ca:
         return None
     raw_ed = ca.get("event_date")
     if raw_ed is None:
@@ -147,8 +166,8 @@ def event_end_skopje(post: dict) -> datetime | None:
     start = event_start_skopje(post) if isinstance(post, dict) else None
     if not start:
         return None
-    ca = post.get("caption_analysis")
-    if isinstance(ca, dict):
+    ca = _caption_analysis_dict_from_post(post)
+    if ca:
         st = ca.get("end_time")
         if st is not None:
             s = str(st).strip()
@@ -244,6 +263,94 @@ def event_date_mk_filter(value):
     return s
 
 
+@app.template_filter("caption_analysis_dict")
+def caption_analysis_dict_filter(post):
+    """Normalize caption_analysis for templates; None if missing (calendar-only cards)."""
+    return _caption_analysis_dict_from_post(post)
+
+
+_VENUE_CATEGORY_MK = {
+    "nightclub": "Ноќен клуб / дискотека",
+    "bar_pub": "Бар / паб",
+    "kafana": "Кафана",
+    "cafe": "Кафуле",
+    "restaurant": "Ресторан",
+    "concert_venue": "Концертна сцена / културен центар",
+    "lounge_rooftop": "Лоунџ / rooftop",
+    "festival_outdoor": "Фестивал / на отворено",
+    "hotel_resort": "Хотел / ресорт",
+    "other_venue": "Друго место",
+}
+
+
+@app.template_filter("venue_category_mk")
+def venue_category_mk_filter(vc):
+    if vc is None or not str(vc).strip():
+        return ""
+    s = str(vc).strip().lower()
+    if s == "unknown":
+        return ""
+    return _VENUE_CATEGORY_MK.get(s, str(vc).strip())
+
+
+_MK_CITY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"скопје|skopje", re.I), "Скопје"),
+    (re.compile(r"битола|bitola", re.I), "Битола"),
+    (re.compile(r"охрид|ohrid", re.I), "Охрид"),
+    (re.compile(r"тетово|tetovo", re.I), "Тетово"),
+    (re.compile(r"куманово|kumanovo", re.I), "Куманово"),
+    (re.compile(r"прилеп|prilep", re.I), "Прилеп"),
+    (re.compile(r"штип|stip\b", re.I), "Штип"),
+    (re.compile(r"струмица|strumica", re.I), "Струмица"),
+    (re.compile(r"велес|veles", re.I), "Велес"),
+    (re.compile(r"гостивар|gostivar", re.I), "Гостивар"),
+    (re.compile(r"кичево|kicevo", re.I), "Кичево"),
+]
+
+
+def _infer_city_mk_from_text(*parts: str) -> str:
+    blob = " ".join(p for p in parts if p)
+    if not blob.strip():
+        return ""
+    for rx, name in _MK_CITY_PATTERNS:
+        if rx.search(blob):
+            return name
+    return ""
+
+
+def _infer_venue_category_key(post: dict, username: str) -> str | None:
+    return resolved_venue_category_slug(post, username or "")
+
+
+@app.template_filter("place_city_display")
+def place_city_display_filter(post, username: str = ""):
+    """Show city_mk, or infer from location / caption / username (stale DB rows)."""
+    if not isinstance(post, dict):
+        return ""
+    ca = _caption_analysis_dict_from_post(post)
+    if not ca:
+        return ""
+    direct = (ca.get("city_mk") or "").strip()
+    if direct:
+        return direct
+    return _infer_city_mk_from_text(
+        ca.get("location") or "",
+        post.get("caption") or "",
+        username or "",
+    )
+
+
+@app.template_filter("place_venue_display")
+def place_venue_display_filter(post, username: str = ""):
+    """Macedonian venue type: model value or heuristic from handle/caption/location."""
+    if not isinstance(post, dict):
+        return ""
+    key = _infer_venue_category_key(post, username or "")
+    if not key:
+        return ""
+    return _VENUE_CATEGORY_MK.get(key, key)
+
+
 def parse_date_range_args() -> tuple[date | None, date | None, str, str]:
     """Read ?date_from=&date_to= (YYYY-MM-DD). Returns (from, to, raw_from, raw_to) for forms."""
     raw_f = request.args.get("date_from", "").strip()
@@ -309,6 +416,14 @@ def parse_performer_role_arg() -> tuple[str | None, str]:
     return raw, raw
 
 
+def parse_venue_category_arg() -> tuple[str | None, str]:
+    """Read ?venue= (caption_analysis.venue_category). Empty = any."""
+    raw = request.args.get("venue", "").strip().lower()
+    if not raw or raw not in VENUE_CATEGORY_FILTER_VALUES:
+        return None, ""
+    return raw, raw
+
+
 def parse_search_arg() -> tuple[str | None, str]:
     """Read ?q= — username, venue name, or text in post JSON (performers, caption)."""
     raw = request.args.get("q", "").strip()
@@ -326,6 +441,7 @@ def filters_active(
     has_price: bool | None,
     weekday: str | None,
     role: str | None,
+    venue: str | None,
 ) -> bool:
     """True when any filter is active (URL). Search alone does not switch sort order."""
     return (
@@ -334,6 +450,7 @@ def filters_active(
         or has_price is True
         or (weekday is not None and weekday != "")
         or (role is not None and role != "")
+        or (venue is not None and venue != "")
     )
 
 
@@ -361,6 +478,7 @@ def combined_filter_query_suffix(
     raw_dow: str = "",
     raw_role: str = "",
     raw_q: str = "",
+    raw_venue: str = "",
 ) -> str:
     parts: list[str] = []
     if raw_f.strip():
@@ -375,6 +493,8 @@ def combined_filter_query_suffix(
         parts.append(f"role={quote(raw_role.strip().lower(), safe='')}")
     if raw_q.strip():
         parts.append(f"q={quote(raw_q.strip(), safe='')}")
+    if raw_venue.strip() and raw_venue.strip().lower() in VENUE_CATEGORY_FILTER_VALUES:
+        parts.append(f"venue={quote(raw_venue.strip().lower(), safe='')}")
     return f"?{'&'.join(parts)}" if parts else ""
 
 
@@ -384,8 +504,9 @@ def index():
     has_price, raw_has_price = parse_has_price_arg()
     weekday, raw_dow = parse_weekday_arg()
     role, raw_role = parse_performer_role_arg()
+    venue, raw_venue = parse_venue_category_arg()
     search, raw_q = parse_search_arg()
-    fa = filters_active(d_from, d_to, has_price, weekday, role)
+    fa = filters_active(d_from, d_to, has_price, weekday, role, venue)
     entries, total_events = fetch_flat_events_filtered(
         date_from=d_from,
         date_to=d_to,
@@ -397,9 +518,10 @@ def index():
         filters_active=fa,
         performer_role=role,
         search=search,
+        venue_category=venue,
     )
     q_suffix = combined_filter_query_suffix(
-        raw_f, raw_t, raw_has_price, raw_dow, raw_role, raw_q
+        raw_f, raw_t, raw_has_price, raw_dow, raw_role, raw_q, raw_venue
     )
     has_accounts = bool(list_usernames())
     has_more = total_events > len(entries)
@@ -415,12 +537,14 @@ def index():
         has_price=raw_has_price,
         dow=raw_dow,
         role=raw_role,
+        venue=raw_venue,
         filter_active=bool(
             raw_f
             or raw_t
             or raw_has_price == "1"
             or raw_dow
             or raw_role
+            or raw_venue
             or raw_q
         ),
         date_query_suffix=q_suffix,
@@ -435,8 +559,9 @@ def api_events():
     has_price, raw_has_price = parse_has_price_arg()
     weekday, raw_dow = parse_weekday_arg()
     role, raw_role = parse_performer_role_arg()
+    venue, raw_venue = parse_venue_category_arg()
     search, raw_q = parse_search_arg()
-    fa = filters_active(d_from, d_to, has_price, weekday, role)
+    fa = filters_active(d_from, d_to, has_price, weekday, role, venue)
     username = request.args.get("user", "").strip() or None
     offset = request.args.get("offset", 0, type=int) or 0
     limit = min(request.args.get("limit", PAGE_SIZE, type=int) or PAGE_SIZE, 50)
@@ -451,9 +576,10 @@ def api_events():
         filters_active=fa,
         performer_role=role,
         search=search,
+        venue_category=venue,
     )
     q_suffix = combined_filter_query_suffix(
-        raw_f, raw_t, raw_has_price, raw_dow, raw_role, raw_q
+        raw_f, raw_t, raw_has_price, raw_dow, raw_role, raw_q, raw_venue
     )
     html = render_template(
         "_event_cards_fragment.html",
@@ -777,8 +903,9 @@ def by_user(username):
     has_price, raw_has_price = parse_has_price_arg()
     weekday, raw_dow = parse_weekday_arg()
     role, raw_role = parse_performer_role_arg()
+    venue, raw_venue = parse_venue_category_arg()
     search, raw_q = parse_search_arg()
-    fa = filters_active(d_from, d_to, has_price, weekday, role)
+    fa = filters_active(d_from, d_to, has_price, weekday, role, venue)
     entries, total_events = fetch_flat_events_filtered(
         date_from=d_from,
         date_to=d_to,
@@ -790,9 +917,10 @@ def by_user(username):
         filters_active=fa,
         performer_role=role,
         search=search,
+        venue_category=venue,
     )
     q_suffix = combined_filter_query_suffix(
-        raw_f, raw_t, raw_has_price, raw_dow, raw_role, raw_q
+        raw_f, raw_t, raw_has_price, raw_dow, raw_role, raw_q, raw_venue
     )
     has_more = total_events > len(entries)
     return render_template(
@@ -808,12 +936,14 @@ def by_user(username):
         has_price=raw_has_price,
         dow=raw_dow,
         role=raw_role,
+        venue=raw_venue,
         filter_active=bool(
             raw_f
             or raw_t
             or raw_has_price == "1"
             or raw_dow
             or raw_role
+            or raw_venue
             or raw_q
         ),
         date_query_suffix=q_suffix,

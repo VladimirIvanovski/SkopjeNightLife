@@ -1,7 +1,7 @@
 """
 Analyze Instagram captions with Gemini → structured JSON merged into cloudinary_catalog.json.
 
-Output: each post may have ``caption_analysis`` (schema_version 2). The gallery hides posts
+Output: each post may have ``caption_analysis`` (schema_version 3). The gallery hides posts
 where ``listing_type`` is ``not_nightlife`` (food posts, generic promos, etc.).
 
 Env: GEMINI_API_KEY — in back-end/database-adding-content/.env or environment.
@@ -11,13 +11,15 @@ Run (repo root):
   python back-end/AI-Summarization/analyze_captions_gemini.py --force
   python back-end/AI-Summarization/analyze_captions_gemini.py -u bistro.komedija
 
+With DATABASE_URL set, ``-u`` also upserts that account into Postgres (the site reads the DB, not only JSON).
+
 Re-analyze posts that already have caption_analysis: use --force (otherwise they are skipped).
 Limit to one account: ``-u`` / ``--username`` (case-insensitive).
 
 --- Example (nightlife_event) ---
 
 "caption_analysis": {
-  "schema_version": 2,
+  "schema_version": 3,
   "ticket_price_mkd": 300,
   "ticket_price_raw": null,
   "performers": [
@@ -30,7 +32,10 @@ Limit to one account: ``-u`` / ``--username`` (case-insensitive).
   "end_time": null,
   "reservations_phone": "071317338",
   "reservations_has_info": true,
+  "reservations_url": null,
   "location": "PURE Club, Градски парк, Skopje",
+  "city_mk": "Скопје",
+  "venue_category": "nightclub",
   "listing_type": "nightlife_event",
   "not_nightlife_label": null
 }
@@ -38,7 +43,7 @@ Limit to one account: ``-u`` / ``--username`` (case-insensitive).
 --- Example (not_nightlife — hidden on site) ---
 
 "caption_analysis": {
-  "schema_version": 2,
+  "schema_version": 3,
   "ticket_price_mkd": null,
   "ticket_price_raw": null,
   "performers": [],
@@ -48,7 +53,10 @@ Limit to one account: ``-u`` / ``--username`` (case-insensitive).
   "end_time": null,
   "reservations_phone": null,
   "reservations_has_info": null,
+  "reservations_url": null,
   "location": null,
+  "city_mk": null,
+  "venue_category": "unknown",
   "listing_type": "not_nightlife",
   "not_nightlife_label": "food_menu"
 }
@@ -75,6 +83,37 @@ from google.genai import types
 from psycopg.errors import DeadlockDetected
 from pydantic import BaseModel, ConfigDict, Field
 
+# Venue type for the event (best-effort; one value per post).
+VenueCategory = Literal[
+    "nightclub",
+    "bar_pub",
+    "kafana",
+    "cafe",
+    "restaurant",
+    "concert_venue",
+    "lounge_rooftop",
+    "festival_outdoor",
+    "hotel_resort",
+    "other_venue",
+    "unknown",
+]
+
+_VALID_VENUE: frozenset[str] = frozenset(
+    (
+        "nightclub",
+        "bar_pub",
+        "kafana",
+        "cafe",
+        "restaurant",
+        "concert_venue",
+        "lounge_rooftop",
+        "festival_outdoor",
+        "hotel_resort",
+        "other_venue",
+        "unknown",
+    )
+)
+
 AI_SUM_DIR = Path(__file__).resolve().parent
 BACKEND_ROOT = AI_SUM_DIR.parent
 ENV_PATH = BACKEND_ROOT / "database-adding-content" / ".env"
@@ -96,7 +135,7 @@ class Performer(BaseModel):
 class CaptionAnalysis(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    schema_version: int = Field(default=2, description="Always 2")
+    schema_version: int = Field(default=3, description="Always 3")
 
     ticket_price_mkd: int | None = Field(
         default=None,
@@ -140,10 +179,33 @@ class CaptionAnalysis(BaseModel):
         default=None,
         description="True if reservations mentioned without a clear phone",
     )
+    reservations_url: str | None = Field(
+        default=None,
+        description=(
+            "Single http(s) URL for online reservations/tickets/booking (Eventbrite, form, venue site). "
+            "Never put phone numbers or tel: links here — use reservations_phone for phones. null if none."
+        ),
+    )
 
     location: str | None = Field(
         default=None,
         description="Venue name and area/city if stated",
+    )
+    city_mk: str | None = Field(
+        default=None,
+        description=(
+            "City in North Macedonia (Cyrillic: Скопје, Битола, …). If location text includes a MK city in Latin or "
+            "Cyrillic (e.g. 'Saloon, Skopje'), set the Cyrillic form. Required for nightlife_event in MK when "
+            "location or caption names the city; avoid null then."
+        ),
+    )
+    venue_category: VenueCategory | None = Field(
+        default=None,
+        description=(
+            "Venue type: nightclub; bar_pub (saloon, pub, bar); kafana; cafe; restaurant; concert_venue; "
+            "lounge_rooftop; festival_outdoor; hotel_resort; other_venue; unknown. For nightlife_event, prefer a "
+            "specific category over unknown when the venue kind is inferable."
+        ),
     )
 
     listing_type: Literal["nightlife_event", "not_nightlife"] = Field(
@@ -173,8 +235,11 @@ Rules:
 - day_of_week: english lowercase monday..sunday from caption (Петок→friday, Сабота→saturday).
 - event_date: YYYY-MM-DD when the caption implies a date. If the user message includes "Instagram post published at", use that instant as the anchor: resolve "оваа сабота", "вечерва", "Петок" without year, "next weekend", etc. to the correct calendar date relative to that publication time (do not guess a random year). If still ambiguous, null.
 - start_time / end_time: 24h HH:MM (00:00, 22:30). null if not stated.
-- reservations_phone: digits from reservation lines. reservations_has_info true if they say 'резервации' etc. but no number.
-- location: venue + neighborhood/city when stated.
+- reservations_phone: extract phone for reservations same as before (digits). reservations_has_info true if they say 'резервации' etc. but no number. Do not duplicate a phone URL into reservations_url.
+- reservations_url: only a full http:// or https:// link for booking, tickets, Google Form, Eventbrite, venue reservation page. null if no such link. Never use tel: or sms: here.
+- location: venue + neighborhood/city when stated (free text).
+- city_mk: municipality/city in North Macedonia (Cyrillic preferred: Скопје, Битола, Охрид, …). For listing_type nightlife_event inside MK: set this whenever the city is implied — e.g. location says "Saloon, Skopje" or "Venue, Скопје" → city_mk must be "Скопје" (not null). Same for other MK cities in Latin or Cyrillic in location/caption/hashtags. null only if clearly outside MK or no basis.
+- venue_category: for nightlife_event at a real venue, pick the best enum (nightclub, bar_pub, kafana, …). Do not use unknown when the post is clearly a club night, bar gig, or venue party — infer from venue type words (saloon, pub, дискотека, кафана, MKC, …) and tone. unknown only when there is no reasonable guess.
 - listing_type: nightlife_event for club nights, parties, live/DJ nights, pub/bar evenings, themed nights (e.g. St. Patrick's at the venue), quiz or live music at a bar/pub. not_nightlife for menus-only, coffee, unrelated ads, reposts with no event.
 - not_nightlife_label: required when listing_type is not_nightlife (short snake_case reason); null for nightlife_event."""
 
@@ -301,6 +366,20 @@ def _digits_phone(s: str | None) -> str | None:
     return d if len(d) >= 6 else _clean_str(s)
 
 
+def _normalize_reservations_url(s: str | None) -> str | None:
+    u = _clean_str(s)
+    if not u:
+        return None
+    low = u.lower()
+    if low.startswith("tel:") or low.startswith("mailto:") or low.startswith("sms:"):
+        return None
+    if not (low.startswith("http://") or low.startswith("https://")):
+        return None
+    if len(u) > 2048:
+        u = u[:2048]
+    return u
+
+
 def normalize_analysis(d: dict) -> dict:
     lt = d.get("listing_type")
     if lt not in ("nightlife_event", "not_nightlife"):
@@ -364,8 +443,12 @@ def normalize_analysis(d: dict) -> dict:
     elif rhi is not None and not isinstance(rhi, bool):
         rhi = None
 
+    venue = _clean_str(d.get("venue_category"))
+    if not venue or venue not in _VALID_VENUE:
+        venue = "unknown"
+
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "ticket_price_mkd": price_int,
         "ticket_price_raw": _clean_str(d.get("ticket_price_raw")),
         "performers": performers_out,
@@ -375,7 +458,10 @@ def normalize_analysis(d: dict) -> dict:
         "end_time": et,
         "reservations_phone": _digits_phone(_clean_str(d.get("reservations_phone"))),
         "reservations_has_info": rhi,
+        "reservations_url": _normalize_reservations_url(_clean_str(d.get("reservations_url"))),
         "location": _clean_str(d.get("location")),
+        "city_mk": _clean_str(d.get("city_mk")),
+        "venue_category": venue,
         "listing_type": lt,
         "not_nightlife_label": not_label,
     }
@@ -384,7 +470,7 @@ def normalize_analysis(d: dict) -> dict:
 def empty_analysis_no_caption() -> dict:
     """No API call; keep posts visible until analyzed (listing_type null)."""
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "ticket_price_mkd": None,
         "ticket_price_raw": None,
         "performers": [],
@@ -394,7 +480,10 @@ def empty_analysis_no_caption() -> dict:
         "end_time": None,
         "reservations_phone": None,
         "reservations_has_info": None,
+        "reservations_url": None,
         "location": None,
+        "city_mk": None,
+        "venue_category": "unknown",
         "listing_type": None,
         "not_nightlife_label": None,
     }
@@ -844,7 +933,7 @@ def run(
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     _write_catalog_json(catalog_path, catalog)
 
-    # Sync to database (Railway/local) for global runs.
+    # Sync to database (Railway/local). Full catalog replace only without -u; -u merges one account.
     if not username_filter:
         try:
             from catalog_db import sync_from_json
@@ -852,6 +941,28 @@ def run(
             pass
         else:
             sync_from_json(catalog)
+    else:
+        try:
+            from catalog_db import DATABASE_URL, upsert_account_and_posts
+        except ImportError:
+            pass
+        else:
+            if DATABASE_URL:
+                want = username_filter.strip().lower()
+                full_by = catalog.get("by_username") or {}
+                key: str | None = None
+                block: dict | None = None
+                for k, v in full_by.items():
+                    if str(k).strip().lower() == want:
+                        key, block = str(k), v if isinstance(v, dict) else None
+                        break
+                if key and block is not None:
+                    upsert_account_and_posts(
+                        key,
+                        block.get("profile") or {},
+                        block.get("posts") or [],
+                    )
+                    print(f"Synced @{key} -> Postgres (single account)", flush=True)
 
     line = (
         f"\nWrote {catalog_path} | analyzed: {done} | skipped (had analysis): {skipped} | "

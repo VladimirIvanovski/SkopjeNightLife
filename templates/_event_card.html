@@ -1,7 +1,7 @@
 {# entry: username, post, media #}
 {% set ig = entry.instagram_handle | default(entry.username) %}
-{% set _ca = entry.post.caption_analysis %}
-{% set ca = _ca if _ca is mapping else {} %}
+{% set ca = entry.post | caption_analysis_dict %}
+{% if ca is none %}{% set ca = {} %}{% endif %}
 {% set cal_title = entry.display_name ~ ' (@' ~ ig ~ ')' %}
 {% if ca.get('location') %}
 {% set cal_title = cal_title ~ ' · ' ~ ca.location %}
@@ -37,7 +37,7 @@
     {% endif %}
     {% endif %}
   </div>
-  {% with post=entry.post, cal_save_start=t_start %}
+  {% with post=entry.post, cal_save_start=t_start, uname=entry.username %}
   {% include '_gemini_analysis.html' %}
   {% endwith %}
   {% with ig=ig, post=entry.post %}

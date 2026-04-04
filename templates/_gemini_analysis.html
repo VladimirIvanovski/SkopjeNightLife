@@ -1,4 +1,4 @@
-{# Expects `post`. Optional `cal_save_start` (ISO) for calendar checkbox. #}
+{# Expects `post`, optional `cal_save_start` (ISO), optional `uname` (Instagram username for place hints). #}
 {% macro _calendar_save(t_start) -%}
   {% if t_start %}
   <label class="save-event-wrap" title="Зачувај за извоз во календар (.ics)">
@@ -13,39 +13,38 @@
   {% endif %}
 {%- endmacro %}
 
-{% set ca = post.caption_analysis %}
+{% set ca = post | caption_analysis_dict %}
 {% if cal_save_start is not defined %}
 {% set cal_save_start = '' %}
 {% endif %}
+{% set _u = uname | default('', true) %}
+{% set city_line = post | place_city_display(_u) %}
+{% set venue_line = post | place_venue_display(_u) %}
 
 {% if ca is mapping and ca.get('listing_type') != 'not_nightlife' %}
-{% set perf = ca.get('performers') or [] %}
-{% set has_info =
-  (ca.get('ticket_price_mkd') is not none) or
-  ca.get('ticket_price_raw') or
-  (perf | length > 0) or
-  ca.get('artist_name') or
-  ca.get('day_of_week') or ca.get('event_day') or
-  ca.get('event_date') or
-  ca.get('start_time') or ca.get('event_start_time') or
-  ca.get('end_time') or
-  ca.get('reservations_phone') or ca.get('reservations_has_info') or ca.get('reservation_number') or
-  ca.get('location') or
-  (ca.get('music_name') and perf | length == 0) or
-  (ca.get('listing_type') == 'nightlife_event')
-%}
-{% if has_info %}
 <div class="gemini-info" aria-label="AI извлечени детали">
   <div class="gemini-head-row">
     <div class="gemini-head">✨ Од описот</div>
     <div class="gemini-head-actions">{{ _calendar_save(cal_save_start) }}</div>
   </div>
+
+  {% if city_line %}
+  <div>🏙️ <strong>Град:</strong> {{ city_line }}</div>
+  {% endif %}
+  {% if venue_line %}
+  <div>🏷️ <strong>Тип место:</strong> {{ venue_line }}</div>
+  {% endif %}
+  {% if ca.get('location') %}
+  <div>📍 <strong>Локација:</strong> {{ ca.location }}</div>
+  {% endif %}
+
   {% if ca.get('ticket_price_mkd') is not none %}
   <div>🎟️ <strong>Цена:</strong> {{ ca.ticket_price_mkd }} ден</div>
   {% elif ca.get('ticket_price_raw') %}
   <div>🎟️ <strong>Цена:</strong> {{ ca.ticket_price_raw }}</div>
   {% endif %}
 
+  {% set perf = ca.get('performers') or [] %}
   {% if perf | length > 0 %}
   <div>🎵 <strong>Изведувачи:</strong>
     {% for p in perf %}
@@ -87,26 +86,14 @@
   <div>📞 <strong>Резервации:</strong> {{ ca.reservation_number }}</div>
   {% endif %}
 
-  {% if ca.get('location') %}
-  <div>📍 <strong>Локација:</strong> {{ ca.location }}</div>
+  {% if ca.get('reservations_url') %}
+  <div>🔗 <strong>Резервации (линк):</strong> <a href="{{ ca.reservations_url | e }}" target="_blank" rel="noopener noreferrer">{{ ca.reservations_url }}</a></div>
   {% endif %}
 
   {% if ca.get('music_name') and perf | length == 0 %}
   <div>🎶 <strong>Музика:</strong> {{ ca.music_name }}</div>
   {% endif %}
-
-  {% if ca.get('listing_type') == 'nightlife_event' %}
-  <div>🪩 <strong>Тип:</strong> настан / ноќен клуб</div>
-  {% endif %}
 </div>
-{% else %}
-<div class="gemini-info gemini-info--calendar-only" aria-label="Календар">
-  <div class="gemini-head-row">
-    <div class="gemini-head gemini-head--muted">{% if cal_save_start %}📅 На календар{% endif %}</div>
-    <div class="gemini-head-actions">{{ _calendar_save(cal_save_start) }}</div>
-  </div>
-</div>
-{% endif %}
 {% else %}
 <div class="gemini-info gemini-info--calendar-only" aria-label="Календар">
   <div class="gemini-head-row">

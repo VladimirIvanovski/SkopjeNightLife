@@ -7,6 +7,8 @@ Sync from cloudinary_catalog.json:
   python catalog_db.py
 Recompute visible flags from existing post_json (e.g. Railway DB after rule change):
   python catalog_db.py --refresh-visible
+Recompute venue_category column (filters / old caption_analysis without venue_category):
+  python catalog_db.py --refresh-venue
 Dump Postgres back into cloudinary_catalog.json (backup; avoids losing DB-only users on sync):
   python catalog_db.py --export-json
   python catalog_db.py --export-json path/to/backup.json
@@ -61,6 +63,23 @@ SUGGEST_GLOBAL_MONTHLY_LIMIT = 350
 # Lowercase Instagram usernames hidden from feed, /api/events, user picker, and /u/<name> (404).
 HIDDEN_FROM_FEED_USERNAMES: frozenset[str] = frozenset({"equilibriumdaynight"})
 
+# Gemini caption_analysis.venue_category — URL filter ?venue= must be one of these (lowercase).
+VENUE_CATEGORY_FILTER_VALUES: frozenset[str] = frozenset(
+    (
+        "nightclub",
+        "bar_pub",
+        "kafana",
+        "cafe",
+        "restaurant",
+        "concert_venue",
+        "lounge_rooftop",
+        "festival_outdoor",
+        "hotel_resort",
+        "other_venue",
+        "unknown",
+    )
+)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
   username TEXT PRIMARY KEY,
@@ -79,7 +98,8 @@ CREATE TABLE IF NOT EXISTS posts (
   ticket_price_mkd NUMERIC,
   listing_type TEXT,
   performer_roles JSONB,
-  visible BOOLEAN NOT NULL DEFAULT FALSE
+  visible BOOLEAN NOT NULL DEFAULT FALSE,
+  venue_category TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_posts_user_idx ON posts(username, post_index);
@@ -124,6 +144,10 @@ CREATE TABLE IF NOT EXISTS suggest_global_monthly (
 
 def init_schema(conn) -> None:
     conn.execute(SCHEMA)
+    conn.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS venue_category TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_posts_venue_category ON posts(venue_category)"
+    )
 
 
 def _caption_analysis_dict(post: dict) -> dict | None:
@@ -156,6 +180,39 @@ def _listing_type_from_post(post: dict) -> str | None:
 def post_visible_on_site(post: dict) -> bool:
     """Feed: show only posts where Gemini classified listing_type as nightlife_event."""
     return _listing_type_from_post(post) == "nightlife_event"
+
+
+def resolved_venue_category_slug(post: dict, username: str) -> str | None:
+    """
+    Slug for ?venue= filter and posts.venue_category column.
+    Uses caption_analysis.venue_category when set and not unknown; else heuristics
+    (kafana/кафана, saloon, nightclub in handle, …) so old DB rows without that JSON field still filter.
+    """
+    ca = _caption_analysis_dict(post) or {}
+    if ca.get("listing_type") == "not_nightlife":
+        return None
+    raw = (ca.get("venue_category") or "").strip().lower()
+    if raw in VENUE_CATEGORY_FILTER_VALUES and raw != "unknown":
+        return raw
+    un = (username or "").lower()
+    cap = (post.get("caption") or "").lower() if isinstance(post, dict) else ""
+    loc = (ca.get("location") or "").lower()
+    blob = f"{un} {cap} {loc}"
+    if "saloon" in blob:
+        return "bar_pub"
+    if re.search(r"\b(pub|паб|irish)\b", blob, re.I):
+        return "bar_pub"
+    if "kafana" in blob or "кафана" in blob:
+        return "kafana"
+    if "lounge" in blob or "rooftop" in blob:
+        return "lounge_rooftop"
+    if "mkc" in blob or "филхармонија" in blob or "universal hall" in blob:
+        return "concert_venue"
+    if "nightclub" in un:
+        return "nightclub"
+    if re.search(r"\bdisco\b|\bдискотека\b", blob, re.I):
+        return "nightclub"
+    return None
 
 
 def pick_media_for_post(post: dict) -> dict | None:
@@ -293,10 +350,11 @@ def upsert_post_row(conn, username: str, post: dict) -> None:
     proles_s = _performer_roles_json(post)
     proles = Jsonb(json.loads(proles_s)) if proles_s else None
     vis = bool(post_visible_on_site(post))
+    vcat = resolved_venue_category_slug(post, username)
     conn.execute(
         """INSERT INTO posts (username, post_index, post_json, posted_at, posted_date,
-           event_date, event_date_end, ticket_price_mkd, listing_type, performer_roles, visible)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+           event_date, event_date_end, ticket_price_mkd, listing_type, performer_roles, visible, venue_category)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
            ON CONFLICT (username, post_index) DO UPDATE SET
              post_json = EXCLUDED.post_json,
              posted_at = EXCLUDED.posted_at,
@@ -306,7 +364,8 @@ def upsert_post_row(conn, username: str, post: dict) -> None:
              ticket_price_mkd = EXCLUDED.ticket_price_mkd,
              listing_type = EXCLUDED.listing_type,
              performer_roles = EXCLUDED.performer_roles,
-             visible = EXCLUDED.visible
+             visible = EXCLUDED.visible,
+             venue_category = EXCLUDED.venue_category
            """,
         (
             username,
@@ -320,6 +379,7 @@ def upsert_post_row(conn, username: str, post: dict) -> None:
             listing,
             proles,
             vis,
+            vcat,
         ),
     )
 
@@ -391,6 +451,29 @@ def sync_from_json(catalog: dict | None = None) -> tuple[int, int]:
                 pc += 1
         conn.commit()
     return ac, pc
+
+
+def refresh_posts_venue_category_from_db() -> int:
+    """Recompute posts.venue_category from post_json + username (fixes filters for old analyze runs)."""
+    n = 0
+    with closing(get_connection()) as conn:
+        rows = conn.execute(
+            "SELECT id, username, post_json FROM posts"
+        ).fetchall()
+        for r in rows:
+            pj = r["post_json"]
+            if isinstance(pj, str):
+                pj = json.loads(pj)
+            if not isinstance(pj, dict):
+                continue
+            slug = resolved_venue_category_slug(pj, str(r["username"] or ""))
+            conn.execute(
+                "UPDATE posts SET venue_category = %s WHERE id = %s",
+                (slug, r["id"]),
+            )
+            n += 1
+        conn.commit()
+    return n
 
 
 def refresh_posts_visible_from_db() -> int:
@@ -1151,6 +1234,35 @@ def _role_clause(performer_role: str | None) -> tuple[str, list[Any]]:
     ), [Jsonb([performer_role])]
 
 
+def _venue_category_json_sql_value() -> str:
+    """Extract venue_category from JSON only (fallback if posts.venue_category column is null)."""
+    return """(
+      CASE
+        WHEN TRIM(COALESCE(p.post_json#>>'{caption_analysis,venue_category}', '')) <> ''
+          THEN LOWER(TRIM(p.post_json#>>'{caption_analysis,venue_category}'))
+        WHEN TRIM(COALESCE(p.post_json#>>'{caption_analysis}', '')) <> ''
+          THEN LOWER(TRIM((p.post_json#>>'{caption_analysis}')::jsonb->>'venue_category'))
+        ELSE LOWER(TRIM(COALESCE(p.post_json->>'venue_category', '')))
+      END
+    )"""
+
+
+def _venue_category_clause(venue_category: str | None) -> tuple[str, list[Any]]:
+    """Match posts.venue_category (filled at upsert) or JSON path as fallback."""
+    if not venue_category:
+        return "", []
+    v = str(venue_category).strip().lower()
+    if v not in VENUE_CATEGORY_FILTER_VALUES:
+        return "", []
+    json_expr = _venue_category_json_sql_value()
+    return (
+        " AND (LOWER(TRIM(COALESCE(p.venue_category, ''))) = %s OR "
+        + json_expr.strip()
+        + " = %s)",
+        [v, v],
+    )
+
+
 def _where_visible_and_filters(
     date_from: date | None,
     date_to: date | None,
@@ -1159,18 +1271,20 @@ def _where_visible_and_filters(
     username: str | None,
     performer_role: str | None = None,
     search: str | None = None,
+    venue_category: str | None = None,
 ) -> tuple[str, list[Any]]:
     ds, dargs = _date_clause(date_from, date_to)
     ps, pargs = _has_price_clause(has_price)
     ws, wargs = _weekday_clause(weekday)
     us, uargs = _username_clause(username)
     rs, rargs = _role_clause(performer_role)
+    vs, vargs = _venue_category_clause(venue_category)
     ss, sargs = _search_clause(search)
     hs, hargs = _hidden_exclude_posts_sql("p")
     # Hide not_nightlife (posts.listing_type); NULL / nightlife_event still show.
     return (
-        " WHERE TRUE" + _EXCLUDE_NOT_NIGHTLIFE_SQL + ds + ps + ws + us + rs + ss + hs,
-        dargs + pargs + wargs + uargs + rargs + sargs + hargs,
+        " WHERE TRUE" + _EXCLUDE_NOT_NIGHTLIFE_SQL + ds + ps + ws + us + rs + vs + ss + hs,
+        dargs + pargs + wargs + uargs + rargs + vargs + sargs + hargs,
     )
 
 
@@ -1212,7 +1326,7 @@ def first_event_date_from_post(post: dict) -> date | None:
 def fetch_flat_events_for_weekend_range(date_from: date, date_to: date) -> list[dict]:
     """Posts whose AI event_date overlaps [date_from, date_to] (same rules as date filter)."""
     where_sql, args = _where_visible_and_filters(
-        date_from, date_to, None, None, None, None, None
+        date_from, date_to, None, None, None, None, None, None
     )
     sql = (
         "SELECT p.username, p.post_json, a.profile_json FROM posts p "
@@ -1277,9 +1391,17 @@ def count_flat_events(
     username: str | None = None,
     performer_role: str | None = None,
     search: str | None = None,
+    venue_category: str | None = None,
 ) -> int:
     where_sql, args = _where_visible_and_filters(
-        date_from, date_to, has_price, weekday, username, performer_role, search
+        date_from,
+        date_to,
+        has_price,
+        weekday,
+        username,
+        performer_role,
+        search,
+        venue_category,
     )
     sql = (
         "SELECT COUNT(*) AS c FROM posts p JOIN accounts a ON a.username = p.username"
@@ -1301,6 +1423,7 @@ def fetch_flat_events_filtered(
     filters_active: bool = False,
     performer_role: str | None = None,
     search: str | None = None,
+    venue_category: str | None = None,
 ) -> tuple[list[dict], int]:
     """
     Flat list of posts with at least one image/video URL; excludes listing_type = not_nightlife.
@@ -1309,10 +1432,24 @@ def fetch_flat_events_filtered(
     Each entry: username, instagram_handle, display_name, profile_full_name, post, media.
     """
     where_sql, args = _where_visible_and_filters(
-        date_from, date_to, has_price, weekday, username, performer_role, search
+        date_from,
+        date_to,
+        has_price,
+        weekday,
+        username,
+        performer_role,
+        search,
+        venue_category,
     )
     total = count_flat_events(
-        date_from, date_to, has_price, weekday, username, performer_role, search
+        date_from,
+        date_to,
+        has_price,
+        weekday,
+        username,
+        performer_role,
+        search,
+        venue_category,
     )
     order_sql = _ORDER_FLAT if filters_active else _ORDER_BY_POSTED
     sql = (
@@ -1357,6 +1494,11 @@ if __name__ == "__main__":
     if len(sys.argv) >= 2 and sys.argv[1] == "--refresh-visible":
         n = refresh_posts_visible_from_db()
         print(f"Recomputed visible on {n} post row(s) -> Postgres (DATABASE_URL)")
+        sys.exit(0)
+
+    if len(sys.argv) >= 2 and sys.argv[1] == "--refresh-venue":
+        n = refresh_posts_venue_category_from_db()
+        print(f"Recomputed venue_category on {n} post row(s) -> Postgres (DATABASE_URL)")
         sys.exit(0)
 
     if len(sys.argv) >= 2 and sys.argv[1] == "--export-json":

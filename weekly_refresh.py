@@ -5,7 +5,7 @@ Goal: rescrape every account in Postgres, re-run Gemini on all posts, sync DB.
 
 Pipeline:
   1) RapidAPI + Cloudinary: --force --from-db (all rows in `accounts`)
-  2) Gemini: --force --mk-only (re-analyze posts + North Macedonia filter + sync to DB)
+  2) Gemini: --force --mk-only (re-analyze posts → caption_analysis v3: city_mk, reservations_url, venue_category + North Macedonia filter + sync to DB)
   3) Extra sync: `python catalog_db.py` (safety net; step 2 already calls sync_from_json)
 
 Env (Railway / cron):

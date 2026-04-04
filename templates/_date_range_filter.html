@@ -1,4 +1,4 @@
-{# Expects: filter_action, filter_clear, date_from, date_to, has_price, dow, role, filter_active, search_q (optional) — Flatpickr in <head> #}
+{# Expects: filter_action, filter_clear, date_from, date_to, has_price, dow, role, venue, filter_active, search_q (optional) — Flatpickr in <head> #}
 <style>
   .filter-bar.filter-panel-wrap {
     margin-bottom: 2rem;
@@ -264,6 +264,23 @@
             <option value="artist" {% if role == 'artist' %}selected{% endif %}>Уметник / настап</option>
             <option value="mc" {% if role == 'mc' %}selected{% endif %}>MC / водител</option>
             <option value="unknown" {% if role == 'unknown' %}selected{% endif %}>Непознато / друго</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label for="filter-venue">Тип место</label>
+          <select name="venue" id="filter-venue">
+            <option value="" {% if not (venue | default('', true)) %}selected{% endif %}>Сите типови</option>
+            <option value="nightclub" {% if venue == 'nightclub' %}selected{% endif %}>Ноќен клуб / дискотека</option>
+            <option value="bar_pub" {% if venue == 'bar_pub' %}selected{% endif %}>Бар / паб</option>
+            <option value="kafana" {% if venue == 'kafana' %}selected{% endif %}>Кафана</option>
+            <option value="cafe" {% if venue == 'cafe' %}selected{% endif %}>Кафуле</option>
+            <option value="restaurant" {% if venue == 'restaurant' %}selected{% endif %}>Ресторан</option>
+            <option value="concert_venue" {% if venue == 'concert_venue' %}selected{% endif %}>Концертна сцена / културен центар</option>
+            <option value="lounge_rooftop" {% if venue == 'lounge_rooftop' %}selected{% endif %}>Лоунџ / rooftop</option>
+            <option value="festival_outdoor" {% if venue == 'festival_outdoor' %}selected{% endif %}>Фестивал / на отворено</option>
+            <option value="hotel_resort" {% if venue == 'hotel_resort' %}selected{% endif %}>Хотел / ресорт</option>
+            <option value="other_venue" {% if venue == 'other_venue' %}selected{% endif %}>Друго место</option>
+            <option value="unknown" {% if venue == 'unknown' %}selected{% endif %}>Непознат тип (AI)</option>
           </select>
         </div>
       </div>

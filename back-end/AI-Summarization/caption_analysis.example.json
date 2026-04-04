@@ -3,7 +3,7 @@
     {
       "description": "Nightlife / club post — shown on the website",
       "caption_analysis": {
-        "schema_version": 2,
+        "schema_version": 3,
         "ticket_price_mkd": null,
         "ticket_price_raw": null,
         "performers": [
@@ -16,7 +16,10 @@
         "end_time": null,
         "reservations_phone": "071317338",
         "reservations_has_info": true,
+        "reservations_url": null,
         "location": "PURE Club, Градски парк, Skopje",
+        "city_mk": "Скопје",
+        "venue_category": "nightclub",
         "listing_type": "nightlife_event",
         "not_nightlife_label": null
       }
@@ -24,7 +27,7 @@
     {
       "description": "Not a venue night-out — hidden on the website (listing_type not_nightlife)",
       "caption_analysis": {
-        "schema_version": 2,
+        "schema_version": 3,
         "ticket_price_mkd": null,
         "ticket_price_raw": null,
         "performers": [],
@@ -34,7 +37,10 @@
         "end_time": null,
         "reservations_phone": null,
         "reservations_has_info": null,
+        "reservations_url": null,
         "location": null,
+        "city_mk": null,
+        "venue_category": "unknown",
         "listing_type": "not_nightlife",
         "not_nightlife_label": "food_menu"
       }
