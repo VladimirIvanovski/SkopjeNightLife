@@ -7,7 +7,8 @@
 </dialog>
 <dialog class="pwa-ios-dialog" id="pwa-fallback-dialog" aria-labelledby="pwa-fallback-title">
   <h2 id="pwa-fallback-title" class="pwa-ios-dialog-title">Инсталирај апликација</h2>
-  <p class="pwa-ios-dialog-text">На <strong>Chrome</strong> или <strong>Edge</strong>: отвори го менито (⋮) и избери <strong>Install app</strong> / <strong>Инсталирај апликација</strong>. На телефон често има и порака од прелистувачот „Додај на почетен екран“.</p>
+  <p class="pwa-ios-dialog-text">На <strong>Chrome</strong> или <strong>Edge</strong>: мени (⋮) → <strong>Install app</strong> / <strong>Инсталирај апликација</strong> или <strong>Add to Home screen</strong>.</p>
+  <p class="pwa-ios-dialog-text pwa-fallback-android" hidden>На <strong>Android</strong>: отвори ја страницата во апликацијата <strong>Google Chrome</strong>, не во вградениот прелистувач на Instagram/Facebook. Ако пишува дека верзијата е застарена или инсталацијата е блокирана, ажурирај <strong>Chrome</strong> и <strong>Android System WebView</strong> од Play Store, рестартирај телефон и пробај пак.</p>
   <form method="dialog" class="pwa-ios-dialog-actions">
     <button type="submit" class="pwa-ios-dialog-close">Затвори</button>
   </form>
@@ -29,6 +30,15 @@
   function isIos() {
     var ua = navigator.userAgent || "";
     return /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+  }
+
+  function isAndroid() {
+    return /Android/i.test(navigator.userAgent || "");
+  }
+
+  var androidTip = document.querySelector(".pwa-fallback-android");
+  if (androidTip && isAndroid() && !isIos()) {
+    androidTip.hidden = false;
   }
 
   if (isStandalone()) {

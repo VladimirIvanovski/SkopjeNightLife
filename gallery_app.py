@@ -53,28 +53,46 @@ PAGE_SIZE = 8
 @app.get("/manifest.webmanifest")
 def manifest_webmanifest():
     """PWA manifest with absolute icon/start URLs (works behind Railway / reverse proxy)."""
+    start = url_for("index", _external=True)
+    icon192 = url_for("static", filename="icons/icon-192.png", _external=True)
+    icon512 = url_for("static", filename="icons/icon-512.png", _external=True)
     data = {
+        "id": start,
         "name": "NightLife Skopje",
         "short_name": "NightLife SK",
         "description": "Откриј ноќни настани во Скопје",
-        "start_url": url_for("index", _external=True),
+        "lang": "mk",
+        "start_url": start,
         "scope": "/",
         "display": "standalone",
-        "orientation": "portrait-primary",
+        "display_override": ["standalone", "minimal-ui", "browser"],
+        "prefer_related_applications": False,
         "background_color": "#05040a",
         "theme_color": "#05040a",
         "icons": [
             {
-                "src": url_for("static", filename="icons/icon-192.png", _external=True),
+                "src": icon192,
                 "sizes": "192x192",
                 "type": "image/png",
                 "purpose": "any",
             },
             {
-                "src": url_for("static", filename="icons/icon-512.png", _external=True),
+                "src": icon192,
+                "sizes": "192x192",
+                "type": "image/png",
+                "purpose": "maskable",
+            },
+            {
+                "src": icon512,
                 "sizes": "512x512",
                 "type": "image/png",
-                "purpose": "any maskable",
+                "purpose": "any",
+            },
+            {
+                "src": icon512,
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "maskable",
             },
         ],
     }
