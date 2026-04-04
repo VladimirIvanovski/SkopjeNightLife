@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+{% include '_pwa_head.html' %}
   <title>Контакт — NightLife Skopje</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -56,6 +57,7 @@
   </style>
 </head>
 <body>
+  {% set nav = 'contact' %}
   {% include '_site_header.html' %}
   <main class="contact-page">
     <h1>Контакт</h1>
@@ -69,7 +71,7 @@
         <li>известувања за омилени клубови / изведувачи;</li>
         <li>споделување на настан на социјални мрежи со убава „карта“;</li>
         <li>мала мапа на Скопје со настани;</li>
-        <li>темна/светла тема или PWA (инсталирај како апликација).</li>
+        <li>темна/светла тема.</li>
       </ul>
     </div>
   </main>

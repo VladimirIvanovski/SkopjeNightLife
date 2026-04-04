@@ -6,6 +6,7 @@
       <span>Откриј ноќни настани</span>
     </a>
     <nav class="site-nav" aria-label="Главна навигација">
+      <button type="button" class="pwa-install-btn" id="pwa-install-btn">Инсталирај апликација</button>
       <a href="{{ url_for('index') }}" class="{% if nav == 'events' %}is-active{% endif %}">Евенти</a>
       <a href="{{ url_for('weekend_surprise') }}" class="{% if nav == 'weekend' %}is-active{% endif %}">Изненади ме!</a>
       <a href="{{ url_for('suggest_account') }}" class="{% if nav == 'suggest' %}is-active{% endif %}">Предложи профил</a>
@@ -13,6 +14,7 @@
     </nav>
   </div>
 </header>
+{% include '_pwa_install.html' %}
 <script>
 (function () {
   var h = document.querySelector('header.top.site-header');

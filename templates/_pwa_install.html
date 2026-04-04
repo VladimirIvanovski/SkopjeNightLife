@@ -1,0 +1,75 @@
+<dialog class="pwa-ios-dialog" id="pwa-ios-dialog" aria-labelledby="pwa-ios-title">
+  <h2 id="pwa-ios-title" class="pwa-ios-dialog-title">Додај на почетен екран</h2>
+  <p class="pwa-ios-dialog-text">На iPhone или iPad: допри копчето <strong>Share</strong> (квадрат со стрелка нагоре), па избери <strong>Add to Home Screen</strong> / <strong>Додај на почетен екран</strong>.</p>
+  <form method="dialog" class="pwa-ios-dialog-actions">
+    <button type="submit" class="pwa-ios-dialog-close">Разбрав</button>
+  </form>
+</dialog>
+<dialog class="pwa-ios-dialog" id="pwa-fallback-dialog" aria-labelledby="pwa-fallback-title">
+  <h2 id="pwa-fallback-title" class="pwa-ios-dialog-title">Инсталирај апликација</h2>
+  <p class="pwa-ios-dialog-text">На <strong>Chrome</strong> или <strong>Edge</strong>: отвори го менито (⋮) и избери <strong>Install app</strong> / <strong>Инсталирај апликација</strong>. На телефон често има и порака од прелистувачот „Додај на почетен екран“.</p>
+  <form method="dialog" class="pwa-ios-dialog-actions">
+    <button type="submit" class="pwa-ios-dialog-close">Затвори</button>
+  </form>
+</dialog>
+<script>
+(function () {
+  var btn = document.getElementById("pwa-install-btn");
+  var iosDlg = document.getElementById("pwa-ios-dialog");
+  var fallbackDlg = document.getElementById("pwa-fallback-dialog");
+  if (!btn) return;
+
+  function isStandalone() {
+    return (
+      window.matchMedia("(display-mode: standalone)").matches ||
+      window.navigator.standalone === true
+    );
+  }
+
+  function isIos() {
+    var ua = navigator.userAgent || "";
+    return /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+  }
+
+  if (isStandalone()) {
+    btn.hidden = true;
+    return;
+  }
+
+  btn.hidden = false;
+  var deferredPrompt = null;
+
+  window.addEventListener("beforeinstallprompt", function (e) {
+    e.preventDefault();
+    deferredPrompt = e;
+  });
+
+  window.addEventListener("appinstalled", function () {
+    deferredPrompt = null;
+    btn.hidden = true;
+  });
+
+  btn.addEventListener("click", function () {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      deferredPrompt.userChoice.finally(function () {
+        deferredPrompt = null;
+      });
+      return;
+    }
+    if (isIos()) {
+      if (iosDlg && typeof iosDlg.showModal === "function") iosDlg.showModal();
+      return;
+    }
+    if (fallbackDlg && typeof fallbackDlg.showModal === "function") fallbackDlg.showModal();
+  });
+
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("{{ url_for('service_worker') }}", { scope: "/" }).catch(
+        function () {}
+      );
+    });
+  }
+})();
+</script>

@@ -18,10 +18,11 @@ from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
+import json
 import os
 import secrets
 
-from flask import Flask, abort, jsonify, render_template, request, session
+from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory, session, url_for
 
 from catalog_db import (
     account_exists,
@@ -39,12 +40,58 @@ from catalog_db import (
     username_in_catalog,
 )
 from suggest_pipeline import client_ip_hash, normalize_suggest_username_input
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(32)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 ensure_database()
 
 PAGE_SIZE = 8
+
+
+@app.get("/manifest.webmanifest")
+def manifest_webmanifest():
+    """PWA manifest with absolute icon/start URLs (works behind Railway / reverse proxy)."""
+    data = {
+        "name": "NightLife Skopje",
+        "short_name": "NightLife SK",
+        "description": "Откриј ноќни настани во Скопје",
+        "start_url": url_for("index", _external=True),
+        "scope": "/",
+        "display": "standalone",
+        "orientation": "portrait-primary",
+        "background_color": "#05040a",
+        "theme_color": "#05040a",
+        "icons": [
+            {
+                "src": url_for("static", filename="icons/icon-192.png", _external=True),
+                "sizes": "192x192",
+                "type": "image/png",
+                "purpose": "any",
+            },
+            {
+                "src": url_for("static", filename="icons/icon-512.png", _external=True),
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "any maskable",
+            },
+        ],
+    }
+    return Response(
+        json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+        mimetype="application/manifest+json",
+    )
+
+
+@app.get("/sw.js")
+def service_worker():
+    """Service worker at root scope (see Service-Worker-Allowed)."""
+    resp = send_from_directory(app.static_folder, "sw.js", mimetype="application/javascript")
+    resp.headers["Service-Worker-Allowed"] = "/"
+    resp.headers["Cache-Control"] = "no-cache, max-age=0"
+    return resp
+
 
 _TIME_HM = re.compile(r"^\s*(\d{1,2})\s*:\s*(\d{2})\s*$")
 _EVENT_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")

@@ -1,5 +1,23 @@
-{# Expects `post`. Renders Gemini caption_analysis with emojis (skips not_nightlife). #}
+{# Expects `post`. Optional `cal_save_start` (ISO) for calendar checkbox. #}
+{% macro _calendar_save(t_start) -%}
+  {% if t_start %}
+  <label class="save-event-wrap" title="Зачувај за извоз во календар (.ics)">
+    <input type="checkbox" class="save-event-cb" aria-label="Зачувај настан за календар">
+    <span class="save-event-label">Зачувај</span>
+  </label>
+  {% else %}
+  <label class="save-event-wrap save-event-wrap--disabled" title="Нема AI датум за настан — не може во календар">
+    <input type="checkbox" class="save-event-cb" disabled aria-disabled="true" aria-label="Нема датум за календар">
+    <span class="save-event-label">Нема датум</span>
+  </label>
+  {% endif %}
+{%- endmacro %}
+
 {% set ca = post.caption_analysis %}
+{% if cal_save_start is not defined %}
+{% set cal_save_start = '' %}
+{% endif %}
+
 {% if ca is mapping and ca.get('listing_type') != 'not_nightlife' %}
 {% set perf = ca.get('performers') or [] %}
 {% set has_info =
@@ -18,7 +36,10 @@
 %}
 {% if has_info %}
 <div class="gemini-info" aria-label="AI извлечени детали">
-  <div class="gemini-head">✨ Од описот</div>
+  <div class="gemini-head-row">
+    <div class="gemini-head">✨ Од описот</div>
+    <div class="gemini-head-actions">{{ _calendar_save(cal_save_start) }}</div>
+  </div>
   {% if ca.get('ticket_price_mkd') is not none %}
   <div>🎟️ <strong>Цена:</strong> {{ ca.ticket_price_mkd }} ден</div>
   {% elif ca.get('ticket_price_raw') %}
@@ -78,5 +99,19 @@
   <div>🪩 <strong>Тип:</strong> настан / ноќен клуб</div>
   {% endif %}
 </div>
+{% else %}
+<div class="gemini-info gemini-info--calendar-only" aria-label="Календар">
+  <div class="gemini-head-row">
+    <div class="gemini-head gemini-head--muted">{% if cal_save_start %}📅 На календар{% endif %}</div>
+    <div class="gemini-head-actions">{{ _calendar_save(cal_save_start) }}</div>
+  </div>
+</div>
 {% endif %}
+{% else %}
+<div class="gemini-info gemini-info--calendar-only" aria-label="Календар">
+  <div class="gemini-head-row">
+    <div class="gemini-head gemini-head--muted">{% if cal_save_start %}📅 На календар{% endif %}</div>
+    <div class="gemini-head-actions">{{ _calendar_save(cal_save_start) }}</div>
+  </div>
+</div>
 {% endif %}

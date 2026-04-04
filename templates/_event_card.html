@@ -1,4 +1,4 @@
-{# entry: username, post, media; feed_mode hides profile strip on /u/x #}
+{# entry: username, post, media #}
 {% set ig = entry.instagram_handle | default(entry.username) %}
 {% set _ca = entry.post.caption_analysis %}
 {% set ca = _ca if _ca is mapping else {} %}
@@ -22,31 +22,6 @@
   data-event-end="{{ t_end | e }}"
   {% if entry.post.instagram_url %}data-instagram-url="{{ entry.post.instagram_url | e }}"{% endif %}
 >
-  <div class="event-user-line">
-    <div class="event-user-line-main">
-      {% if not feed_mode|default(false) %}
-      <a class="ig-at-handle" href="https://www.instagram.com/{{ ig }}/" target="_blank" rel="noopener noreferrer" title="Профил на Instagram">@{{ ig }}</a>
-      {% if entry.profile_full_name %}
-      <span class="event-profile-name" title="Име на профилот на Instagram">{{ entry.profile_full_name }}</span>
-      {% endif %}
-      {% else %}
-      <a class="ig-at-handle" href="https://www.instagram.com/{{ ig }}/" target="_blank" rel="noopener noreferrer" title="Профил на Instagram">@{{ ig }}</a>
-      {% endif %}
-    </div>
-    <div class="event-user-line-actions">
-      {% if t_start %}
-      <label class="save-event-wrap" title="Зачувај за извоз во календар (.ics)">
-        <input type="checkbox" class="save-event-cb" aria-label="Зачувај настан за календар">
-        <span class="save-event-label">Зачувај</span>
-      </label>
-      {% else %}
-      <label class="save-event-wrap save-event-wrap--disabled" title="Нема AI датум за настан — не може во календар">
-        <input type="checkbox" class="save-event-cb" disabled aria-disabled="true" aria-label="Нема датум за календар">
-        <span class="save-event-label">Нема датум</span>
-      </label>
-      {% endif %}
-    </div>
-  </div>
   <div class="media-wrap">
     {% if entry.media.resource_type == 'video' %}
     <video controls playsinline preload="metadata" src="{{ entry.media.secure_url }}"></video>
@@ -62,8 +37,10 @@
     {% endif %}
     {% endif %}
   </div>
-  {% with post=entry.post %}
+  {% with post=entry.post, cal_save_start=t_start %}
   {% include '_gemini_analysis.html' %}
-  {% include '_post_instagram_btn.html' %}
+  {% endwith %}
+  {% with ig=ig, post=entry.post %}
+  {% include '_card_instagram_footer.html' %}
   {% endwith %}
 </article>
