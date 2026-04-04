@@ -8,7 +8,8 @@
 <dialog class="pwa-ios-dialog" id="pwa-fallback-dialog" aria-labelledby="pwa-fallback-title">
   <h2 id="pwa-fallback-title" class="pwa-ios-dialog-title">Инсталирај апликација</h2>
   <p class="pwa-ios-dialog-text">На <strong>Chrome</strong> или <strong>Edge</strong>: мени (⋮) → <strong>Install app</strong> / <strong>Инсталирај апликација</strong> или <strong>Add to Home screen</strong>.</p>
-  <p class="pwa-ios-dialog-text pwa-fallback-android" hidden>На <strong>Android</strong>: отвори ја страницата во апликацијата <strong>Google Chrome</strong>, не во вградениот прелистувач на Instagram/Facebook. Ако пишува дека верзијата е застарена или инсталацијата е блокирана, ажурирај <strong>Chrome</strong> и <strong>Android System WebView</strong> од Play Store, рестартирај телефон и пробај пак.</p>
+  <p class="pwa-ios-dialog-text pwa-fallback-android" hidden>На <strong>Android</strong> целосната „инсталација“ прави мала апликација (WebAPK) преку Chrome. Ако пишува <strong>блокирано</strong> или инсталацијата не оди: отвори <strong>Поставки → Апликации → Специјален пристап</strong> (или „Напредни“) → <strong>Инсталирај непознати апликации</strong> / <strong>Install unknown apps</strong> → избери <strong>Chrome</strong> → вклучи <strong>Дозволи</strong>. Потоа пробај пак од Chrome (не од Instagram/Facebook).</p>
+  <p class="pwa-ios-dialog-text pwa-fallback-android pwa-fallback-android2" hidden>Ако сè уште не дозволува: во Chrome мени (⋮) користи <strong>Add to Home screen</strong> / <strong>Додај на почетен екран</strong> — добиваш икона без целосна WebAPK инсталација. Ажурирај <strong>Chrome</strong> и <strong>Android System WebView</strong> од Play Store.</p>
   <form method="dialog" class="pwa-ios-dialog-actions">
     <button type="submit" class="pwa-ios-dialog-close">Затвори</button>
   </form>
@@ -36,9 +37,11 @@
     return /Android/i.test(navigator.userAgent || "");
   }
 
-  var androidTip = document.querySelector(".pwa-fallback-android");
-  if (androidTip && isAndroid() && !isIos()) {
-    androidTip.hidden = false;
+  var androidTips = document.querySelectorAll(".pwa-fallback-android");
+  if (isAndroid() && !isIos()) {
+    androidTips.forEach(function (el) {
+      el.hidden = false;
+    });
   }
 
   if (isStandalone()) {
@@ -76,9 +79,7 @@
 
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", function () {
-      navigator.serviceWorker.register("{{ url_for('service_worker') }}", { scope: "/" }).catch(
-        function () {}
-      );
+      navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(function () {});
     });
   }
 })();

@@ -52,44 +52,40 @@ PAGE_SIZE = 8
 
 @app.get("/manifest.webmanifest")
 def manifest_webmanifest():
-    """PWA manifest with absolute icon/start URLs (works behind Railway / reverse proxy)."""
-    start = url_for("index", _external=True)
-    icon192 = url_for("static", filename="icons/icon-192.png", _external=True)
-    icon512 = url_for("static", filename="icons/icon-512.png", _external=True)
+    """PWA manifest. Paths are host-relative so start_url/icons always match the opened site (custom domain vs *.railway.app)."""
     data = {
-        "id": start,
+        "id": "/",
         "name": "NightLife Skopje",
         "short_name": "NightLife SK",
         "description": "Откриј ноќни настани во Скопје",
         "lang": "mk",
-        "start_url": start,
+        "start_url": "/",
         "scope": "/",
         "display": "standalone",
-        "display_override": ["standalone", "minimal-ui", "browser"],
         "prefer_related_applications": False,
         "background_color": "#05040a",
         "theme_color": "#05040a",
         "icons": [
             {
-                "src": icon192,
+                "src": "/static/icons/icon-192.png",
                 "sizes": "192x192",
                 "type": "image/png",
                 "purpose": "any",
             },
             {
-                "src": icon192,
+                "src": "/static/icons/icon-192.png",
                 "sizes": "192x192",
                 "type": "image/png",
                 "purpose": "maskable",
             },
             {
-                "src": icon512,
+                "src": "/static/icons/icon-512.png",
                 "sizes": "512x512",
                 "type": "image/png",
                 "purpose": "any",
             },
             {
-                "src": icon512,
+                "src": "/static/icons/icon-512.png",
                 "sizes": "512x512",
                 "type": "image/png",
                 "purpose": "maskable",
