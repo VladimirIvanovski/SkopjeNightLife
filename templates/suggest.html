@@ -146,6 +146,7 @@
   </style>
 </head>
 <body>
+{% include '_inapp_browser_banner.html' %}
   {% set nav = 'suggest' %}
   {% include '_site_header.html' %}
   <main class="suggest-page">
@@ -192,7 +193,7 @@
           · следен обид за: <strong id="cooldown-timer">--:--:--</strong>
         </span>
       </div>
-      <p class="suggest-note">Максимум 2 предлози во 12 часа. Додека еден предлог е во редица или се обработува, не можеш да испратиш друг за истата IP-адреса.</p>
+      <p class="suggest-note">Максимум {{ tries_max|default(2) }} предлози во 12 часа. Додека еден предлог е во редица или се обработува, не можеш да испратиш друг за истата IP-адреса.</p>
       {% endif %}
       <script>
         (function () {
@@ -267,6 +268,10 @@
                 if (typeof d.tries_used === 'number') {
                   var tu = document.getElementById('tries-used');
                   if (tu) tu.textContent = String(d.tries_used);
+                }
+                if (typeof d.tries_max === 'number') {
+                  var tm = document.getElementById('tries-max');
+                  if (tm) tm.textContent = String(d.tries_max);
                 }
                 if (typeof d.status === 'string') softProgress(d.status);
                 if (d.done) {

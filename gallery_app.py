@@ -26,6 +26,7 @@ from flask import Flask, Response, abort, jsonify, render_template, request, sen
 
 from catalog_db import (
     VENUE_CATEGORY_FILTER_VALUES,
+    SUGGEST_MAX_PER_WINDOW,
     account_exists,
     resolved_venue_category_slug,
     ensure_database,
@@ -634,7 +635,7 @@ def _suggest_common_template_kwargs(
         job_id=job_id,
         csrf_token=csrf_token,
         tries_used=tries_used,
-        tries_max=2,
+        tries_max=SUGGEST_MAX_PER_WINDOW,
         reset_at_iso=reset_at_iso,
         global_remaining=suggest_global_monthly_remaining(),
     )
@@ -779,13 +780,13 @@ def suggest_account():
             job_id=None,
             csrf_token=secrets.token_urlsafe(24),
             tries_used=0,
-            tries_max=2,
+            tries_max=SUGGEST_MAX_PER_WINDOW,
             reset_at_iso="",
             global_remaining=suggest_global_monthly_remaining(),
         )
 
     used, reset_at = suggest_window_info(ip_h)
-    if used >= 2 and reset_at is not None:
+    if used >= SUGGEST_MAX_PER_WINDOW and reset_at is not None:
         return render_template(
             "suggest.html",
             nav="suggest",
@@ -794,7 +795,7 @@ def suggest_account():
             job_id=None,
             csrf_token=secrets.token_urlsafe(24),
             tries_used=used,
-            tries_max=2,
+            tries_max=SUGGEST_MAX_PER_WINDOW,
             reset_at_iso=reset_at.isoformat(),
             global_remaining=suggest_global_monthly_remaining(),
         )
@@ -813,7 +814,7 @@ def suggest_account():
             job_id=None,
             csrf_token=secrets.token_urlsafe(24),
             tries_used=used,
-            tries_max=2,
+            tries_max=SUGGEST_MAX_PER_WINDOW,
             reset_at_iso=reset_at.isoformat() if reset_at else "",
             global_remaining=0,
         )
@@ -889,7 +890,7 @@ def suggest_status(job_id: int):
             "message": j.get("message") or "",
             "canonical_username": j.get("canonical_username") or "",
             "tries_used": used,
-            "tries_max": 2,
+            "tries_max": SUGGEST_MAX_PER_WINDOW,
             "reset_at_iso": reset_at.isoformat() if reset_at else "",
         }
     )

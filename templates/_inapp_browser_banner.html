@@ -1,0 +1,180 @@
+{# Instagram / Facebook in-app WebView: PWA/install/APIs often fail — copy link or open Chrome (Android).
+   Локален тест во нормален Chrome: додај ?inapp_banner=1 на URL (на пр. http://127.0.0.1:5001/?inapp_banner=1). #}
+<style>
+  .nl-inapp-banner {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 100000;
+    padding: 0.65rem 0.75rem;
+    background: linear-gradient(135deg, rgba(24, 21, 40, 0.98), rgba(18, 16, 31, 0.98));
+    border-bottom: 1px solid rgba(255, 61, 154, 0.35);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    font-family: var(--font-ui, "Inter", system-ui, sans-serif);
+    font-size: 0.8125rem;
+    line-height: 1.35;
+    color: var(--text, #f5f2fc);
+  }
+  .nl-inapp-banner.is-visible {
+    display: block !important;
+  }
+  .nl-inapp-inner {
+    max-width: 720px;
+    margin: 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.65rem;
+  }
+  .nl-inapp-banner p {
+    margin: 0;
+    flex: 1 1 200px;
+    color: var(--muted, #9b92b0);
+  }
+  .nl-inapp-banner p strong { color: var(--text, #f5f2fc); }
+  .nl-inapp-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+  }
+  .nl-inapp-btn {
+    border: none;
+    border-radius: var(--radius-sm, 12px);
+    padding: 0.4rem 0.75rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .nl-inapp-btn--primary {
+    background: linear-gradient(135deg, #ff3d9a, #c44dff);
+    color: #fff;
+  }
+  .nl-inapp-btn--secondary {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text, #f5f2fc);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .nl-inapp-dismiss {
+    margin-left: auto;
+    width: 2rem;
+    height: 2rem;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--muted, #9b92b0);
+    font-size: 1.35rem;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .nl-inapp-dismiss:hover { color: var(--text, #f5f2fc); }
+  body.nl-inapp-pad { padding-top: 3.25rem; }
+  @media (min-width: 640px) {
+    body.nl-inapp-pad { padding-top: 2.75rem; }
+  }
+</style>
+<div id="nl-inapp-banner" class="nl-inapp-banner" role="region" aria-label="Прелистувач од апликација" hidden>
+  <div class="nl-inapp-inner">
+    <p><strong>Вграден прелистувач.</strong> Инсталација и некои функции може да не работат. Отвори ја страницата во <strong>Chrome</strong> (копирај го линкот).</p>
+    <div class="nl-inapp-actions">
+      <button type="button" class="nl-inapp-btn nl-inapp-btn--primary" id="nl-inapp-copy">Копирај линк</button>
+      <button type="button" class="nl-inapp-btn nl-inapp-btn--secondary" id="nl-inapp-chrome" hidden>Отвори во Chrome</button>
+    </div>
+    <button type="button" class="nl-inapp-dismiss" id="nl-inapp-dismiss" aria-label="Затвори">×</button>
+  </div>
+</div>
+<script>
+(function () {
+  var ua = navigator.userAgent || "";
+  var params = new URLSearchParams(window.location.search || "");
+  var forcePreview = params.get("inapp_banner") === "1";
+  var inApp =
+    forcePreview ||
+    /Instagram|FBAN|FBAV|FB_IAB|FBIOS|Line\/|\bFB4A\b/i.test(ua);
+  if (!inApp) return;
+  if (!forcePreview && sessionStorage.getItem("nl_inapp_banner_dismissed") === "1") return;
+
+  var el = document.getElementById("nl-inapp-banner");
+  if (!el) return;
+  el.removeAttribute("hidden");
+  el.classList.add("is-visible");
+  document.body.classList.add("nl-inapp-pad");
+
+  function toast(msg) {
+    window.alert(msg);
+  }
+
+  function urlWithoutPreviewParam() {
+    try {
+      var u = new URL(window.location.href);
+      u.searchParams.delete("inapp_banner");
+      return u.toString();
+    } catch (e) {
+      return window.location.href;
+    }
+  }
+
+  function copyUrl() {
+    var url = urlWithoutPreviewParam();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(function () {
+        toast("Линкот е копиран. Отвори Chrome и залепи во адресната лента.");
+      }).catch(function () {
+        legacyCopy(url);
+      });
+    } else {
+      legacyCopy(url);
+    }
+  }
+
+  function legacyCopy(url) {
+    var ta = document.createElement("textarea");
+    ta.value = url;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand("copy");
+      toast("Линкот е копиран. Отвори Chrome и залепи во адресната лента.");
+    } catch (e) {
+      toast("Не можев да копирам автоматски. Копирај рачно од адресната лента.");
+    }
+    document.body.removeChild(ta);
+  }
+
+  var copyBtn = document.getElementById("nl-inapp-copy");
+  if (copyBtn) copyBtn.addEventListener("click", copyUrl);
+
+  var chromeBtn = document.getElementById("nl-inapp-chrome");
+  if (chromeBtn && /Android/i.test(ua)) {
+    chromeBtn.removeAttribute("hidden");
+    chromeBtn.addEventListener("click", function () {
+      var u = urlWithoutPreviewParam();
+      var rest = u.replace(/^https?:\/\//i, "");
+      var fallback = encodeURIComponent(u);
+      window.location.href =
+        "intent://" +
+        rest +
+        "#Intent;scheme=https;package=com.android.chrome;S.browser_fallback_url=" +
+        fallback +
+        ";end";
+    });
+  }
+
+  var dismiss = document.getElementById("nl-inapp-dismiss");
+  if (dismiss) {
+    dismiss.addEventListener("click", function () {
+      if (!forcePreview) sessionStorage.setItem("nl_inapp_banner_dismissed", "1");
+      el.setAttribute("hidden", "");
+      el.classList.remove("is-visible");
+      document.body.classList.remove("nl-inapp-pad");
+    });
+  }
+})();
+</script>
