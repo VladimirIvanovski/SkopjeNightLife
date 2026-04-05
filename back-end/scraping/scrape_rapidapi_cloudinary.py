@@ -4,6 +4,7 @@ Reels/videos use the account profile photo as a placeholder image (same as photo
 
 Env:
   RAPIDAPI_KEY — RapidAPI key for instagram120.p.rapidapi.com
+  RAPIDAPI_KEY_V2 — optional second key; used if the primary request fails (HTTP error, bad JSON, etc.)
   Cloudinary: ../database-adding-content/.env (CLOUDINARY_URL or CLOUD_NAME + API_KEY + API_SECRET)
 
 Targets & rescrape schedule: back-end/data/scrape_usernames.txt (usernames + last/next UTC datetimes),
@@ -31,6 +32,7 @@ from urllib.parse import urlparse
 import cloudinary
 import cloudinary.uploader
 import requests
+from requests.exceptions import RequestException
 from dotenv import load_dotenv
 
 SCRAPING_DIR = Path(__file__).resolve().parent
@@ -262,26 +264,154 @@ def upload_bytes(data: bytes, username: str, public_id: str, resource_type: str)
         return None
 
 
-def fetch_posts_rapidapi(username: str, api_key: str) -> tuple[list[dict], dict]:
-    """Single RapidAPI call: timeline edges + profile (incl. profile photo) from the same JSON."""
-    headers = {
-        "Content-Type": "application/json",
-        "x-rapidapi-host": RAPIDAPI_HOST,
-        "x-rapidapi-key": api_key,
-    }
-    r = requests.post(
+def _rapidapi_should_retry(status: int | None) -> bool:
+    if status is None:
+        return True
+    return status in (408, 425, 429) or (500 <= status <= 599)
+
+
+def _rapidapi_resp_preview(resp: requests.Response | None, limit: int = 1200) -> str:
+    if resp is None:
+        return ""
+    try:
+        t = (resp.text or "").strip().replace("\r", " ").replace("\n", " ")
+    except Exception:
+        t = ""
+    return (t[:limit] + "…") if len(t) > limit else t
+
+
+def _rapidapi_json_dict_ok(r: requests.Response) -> bool:
+    if not r.ok:
+        return False
+    try:
+        d = r.json()
+    except ValueError:
+        return False
+    return isinstance(d, dict)
+
+
+def _rapidapi_post(username: str, api_key: str) -> requests.Response:
+    return requests.post(
         POSTS_URL,
         json={"username": username, "maxId": ""},
-        headers=headers,
+        headers={
+            "Content-Type": "application/json",
+            "x-rapidapi-host": RAPIDAPI_HOST,
+            "x-rapidapi-key": api_key,
+        },
         timeout=90,
     )
-    r.raise_for_status()
-    data = r.json()
-    res = data.get("result") or data
-    edges = (res.get("edges") or [])[:POSTS_LIMIT]
-    profile_data = _profile_from_rapidapi_result(res, username, edges)
-    print(f"RapidAPI: {len(edges)} post edges")
-    return edges, profile_data
+
+
+def _rapidapi_best_response_round(
+    username: str, key_chain: list[tuple[str, str]]
+) -> requests.Response:
+    """Try each API key in order; return first response with OK + JSON object, else last response (or raise)."""
+    last_r: requests.Response | None = None
+    last_exc: BaseException | None = None
+    for label, k in key_chain:
+        try:
+            r = _rapidapi_post(username, k)
+            last_r = r
+            if _rapidapi_json_dict_ok(r):
+                if label != "primary":
+                    print(
+                        f"[RapidAPI] ok with key={label!r} username={username!r} status={r.status_code}",
+                        flush=True,
+                    )
+                return r
+            print(
+                f"[RapidAPI] key={label!r} no usable JSON username={username!r} "
+                f"status={r.status_code} body={_rapidapi_resp_preview(r)!r}",
+                flush=True,
+            )
+        except RequestException as e:
+            last_exc = e
+            resp = getattr(e, "response", None)
+            print(
+                f"[RapidAPI] key={label!r} RequestException username={username!r} "
+                f"type={type(e).__name__!r} status={getattr(resp, 'status_code', None)!r} "
+                f"err={e!r} body={_rapidapi_resp_preview(resp)!r}",
+                flush=True,
+            )
+    if last_r is not None:
+        return last_r
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("rapidapi: no API keys configured")
+
+
+def fetch_posts_rapidapi(
+    username: str, api_key: str, api_key_v2: str | None = None
+) -> tuple[list[dict], dict]:
+    """RapidAPI /posts: timeline edges + profile. Optional RAPIDAPI_KEY_V2 (env or arg) if primary fails."""
+    key2 = api_key_v2 if api_key_v2 is not None else os.environ.get("RAPIDAPI_KEY_V2", "").strip()
+    key2 = key2 or None
+    if key2 == api_key:
+        key2 = None
+    key_chain: list[tuple[str, str]] = [("primary", api_key)]
+    if key2:
+        key_chain.append(("v2", key2))
+
+    last_exc: BaseException | None = None
+    for attempt in range(4):
+        try:
+            r = _rapidapi_best_response_round(username, key_chain)
+            if _rapidapi_should_retry(r.status_code) and attempt < 3:
+                print(
+                    f"[RapidAPI] retry username={username!r} attempt={attempt + 1}/4 "
+                    f"status={r.status_code} url={POSTS_URL!r} body={_rapidapi_resp_preview(r)!r}",
+                    flush=True,
+                )
+                time.sleep(1.2 * (attempt + 1))
+                continue
+            if not r.ok:
+                print(
+                    f"[RapidAPI] error username={username!r} attempt={attempt + 1}/4 "
+                    f"status={r.status_code} url={POSTS_URL!r} body={_rapidapi_resp_preview(r)!r}",
+                    flush=True,
+                )
+            r.raise_for_status()
+            try:
+                data = r.json()
+            except ValueError:
+                print(
+                    f"[RapidAPI] invalid JSON username={username!r} attempt={attempt + 1}/4 "
+                    f"status={r.status_code} body={_rapidapi_resp_preview(r)!r}",
+                    flush=True,
+                )
+                if attempt < 3:
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
+                raise
+            if not isinstance(data, dict):
+                if attempt < 3:
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
+                data = {}
+            res = data.get("result") or data
+            if not isinstance(res, dict):
+                res = {}
+            edges = (res.get("edges") or [])[:POSTS_LIMIT]
+            profile_data = _profile_from_rapidapi_result(res, username, edges)
+            print(f"RapidAPI: {len(edges)} post edges")
+            return edges, profile_data
+        except RequestException as e:
+            last_exc = e
+            resp = getattr(e, "response", None)
+            print(
+                f"[RapidAPI] round failed username={username!r} attempt={attempt + 1}/4 "
+                f"type={type(e).__name__!r} status={getattr(resp, 'status_code', None)!r} "
+                f"err={e!r} body={_rapidapi_resp_preview(resp)!r}",
+                flush=True,
+            )
+            if attempt < 3:
+                time.sleep(1.2 * (attempt + 1))
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+    return [], _profile_from_rapidapi_result({}, username, [])
 
 
 def caption_text(node: dict) -> str | None:

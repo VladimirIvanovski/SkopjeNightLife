@@ -141,6 +141,9 @@ CREATE TABLE IF NOT EXISTS suggest_global_monthly (
 );
 """
 
+# Serialize CREATE/ALTER across all app connections (worker + web); concurrent ALTER deadlocks otherwise.
+_SCHEMA_ADVISORY_KEY = 0x4E4C4D4B
+
 
 def init_schema(conn) -> None:
     conn.execute(SCHEMA)
@@ -362,11 +365,40 @@ def get_connection():
         raise RuntimeError(
             "No Postgres URL: set DATABASE_URL or DATABASE_PUBLIC_URL (e.g. in .env)."
         )
-    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
-    init_schema(conn)
-    # End implicit txn from DDL so clients never stack BEGIN (avoids "transaction already in progress").
-    conn.commit()
-    return conn
+    deadline = time.time() + 30.0
+    attempt = 0
+    while True:
+        attempt += 1
+        conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        try:
+            conn.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_ADVISORY_KEY,))
+            try:
+                init_schema(conn)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                try:
+                    conn.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_KEY,))
+                except Exception:
+                    pass
+            return conn
+        except DeadlockDetected:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            if attempt >= 15 or time.time() > deadline:
+                raise
+            time.sleep(0.06 + random.random() * 0.12)
+            continue
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            raise
 
 
 def load_catalog_json() -> dict:
@@ -428,15 +460,22 @@ def upsert_post_row(conn, username: str, post: dict) -> None:
 
 def upsert_account_and_posts(username: str, profile: dict, posts: list[dict]) -> None:
     """Merge one user into Postgres without truncating other accounts (suggest / DB-only ingest)."""
-    with closing(get_connection()) as conn:
-        conn.execute(
-            "INSERT INTO accounts (username, profile_json) VALUES (%s, %s) "
-            "ON CONFLICT (username) DO UPDATE SET profile_json = EXCLUDED.profile_json",
-            (username, Jsonb(profile)),
-        )
-        for post in posts or []:
-            upsert_post_row(conn, username, post)
-        conn.commit()
+    for attempt in range(5):
+        try:
+            with closing(get_connection()) as conn:
+                conn.execute(
+                    "INSERT INTO accounts (username, profile_json) VALUES (%s, %s) "
+                    "ON CONFLICT (username) DO UPDATE SET profile_json = EXCLUDED.profile_json",
+                    (username, Jsonb(profile)),
+                )
+                for post in posts or []:
+                    upsert_post_row(conn, username, post)
+                conn.commit()
+            return
+        except DeadlockDetected:
+            if attempt >= 4:
+                raise
+            time.sleep(0.08 + random.random() * 0.12)
 
 
 def delete_account_and_posts(username: str) -> None:

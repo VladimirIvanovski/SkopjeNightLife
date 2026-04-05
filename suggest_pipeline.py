@@ -4,7 +4,7 @@ User-submitted Instagram username → scrape (RapidAPI + Cloudinary) → Postgre
 
 Suggest flow does not read or write cloudinary_catalog.json; gallery reads from Postgres.
 
-Called from gallery_app POST /suggest and worker_suggest. Requires RAPIDAPI_KEY, Cloudinary env, GEMINI_API_KEY, DATABASE_URL.
+Called from gallery_app POST /suggest and worker_suggest. Requires RAPIDAPI_KEY (optional RAPIDAPI_KEY_V2 fallback), Cloudinary env, GEMINI_API_KEY, DATABASE_URL.
 """
 
 from __future__ import annotations
@@ -13,9 +13,29 @@ import hashlib
 import logging
 import os
 import sys
+import traceback
 from pathlib import Path
 
+import requests
+from psycopg.errors import DeadlockDetected
+
 _log = logging.getLogger(__name__)
+
+
+def _print_scrape_exc(prefix: str, handle: str, exc: BaseException) -> None:
+    """Always stdout (works even when logging is quiet)."""
+    print(f"[suggest scrape] {prefix} handle={handle!r} type={type(exc).__name__!r} err={exc!r}", flush=True)
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        try:
+            body = (resp.text or "")[:800].replace("\n", " ")
+        except Exception:
+            body = ""
+        print(
+            f"[suggest scrape] … response status={getattr(resp, 'status_code', None)!r} body={body!r}",
+            flush=True,
+        )
+
 
 from dotenv import load_dotenv
 
@@ -139,7 +159,21 @@ def process_user_suggestion(
     _log.debug("scrape start handle=%r", handle)
     try:
         block = scrape_user_to_cloudinary(handle, api_key)
-    except Exception:
+    except requests.RequestException as exc:
+        _print_scrape_exc("RequestException", handle, exc)
+        _log.warning("scrape HTTP/network failed handle=%r: %s", handle, exc)
+        return {
+            "ok": False,
+            "message": (
+                "Привремено не е достапен профилот преку Instagram API (грешка или претовар). "
+                "Обиди се подоцна; ако си во вграден прелистувач, отвори ја страницата во Chrome."
+            ),
+            "username": handle,
+            "did_block": False,
+        }
+    except Exception as exc:
+        _print_scrape_exc("FAILED (see traceback below)", handle, exc)
+        traceback.print_exc()
         _log.exception("scrape failed handle=%r", handle)
         return {
             "ok": False,
@@ -169,6 +203,14 @@ def process_user_suggestion(
 
     try:
         upsert_account_and_posts(canonical, prof, block.get("posts") or [])
+    except DeadlockDetected:
+        _log.warning("upsert_account_and_posts deadlock canonical=%r", canonical)
+        return {
+            "ok": False,
+            "message": "Серверот е преоптоварен при запис. Обиди се повторно за кратко.",
+            "username": canonical,
+            "did_block": False,
+        }
     except Exception:
         _log.exception("upsert_account_and_posts failed canonical=%r", canonical)
         return {
