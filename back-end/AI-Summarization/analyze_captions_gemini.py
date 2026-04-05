@@ -116,6 +116,11 @@ _VALID_VENUE: frozenset[str] = frozenset(
 
 AI_SUM_DIR = Path(__file__).resolve().parent
 BACKEND_ROOT = AI_SUM_DIR.parent
+_REPO_ROOT = BACKEND_ROOT.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from catalog_db import normalize_mk_reservations_phone
+
 ENV_PATH = BACKEND_ROOT / "database-adding-content" / ".env"
 DEFAULT_CATALOG = BACKEND_ROOT / "data" / "cloudinary_catalog.json"
 # Override with env GEMINI_MODEL if needed (e.g. gemini-2.5-flash-preview).
@@ -173,7 +178,10 @@ class CaptionAnalysis(BaseModel):
 
     reservations_phone: str | None = Field(
         default=None,
-        description="Phone for reservations, digits/spaces; normalize spacing optional",
+        description=(
+            "Single MK mobile for reservations: prefer 9 digits with leading 0 (e.g. 071234567). "
+            "If +389/389 appears, use 0 + national digits. One number only — never concatenate two phones."
+        ),
     )
     reservations_has_info: bool | None = Field(
         default=None,
@@ -235,7 +243,7 @@ Rules:
 - day_of_week: english lowercase monday..sunday from caption (Петок→friday, Сабота→saturday).
 - event_date: YYYY-MM-DD when the caption implies a date. If the user message includes "Instagram post published at", use that instant as the anchor: resolve "оваа сабота", "вечерва", "Петок" without year, "next weekend", etc. to the correct calendar date relative to that publication time (do not guess a random year). If still ambiguous, null.
 - start_time / end_time: 24h HH:MM (00:00, 22:30). null if not stated.
-- reservations_phone: extract phone for reservations same as before (digits). reservations_has_info true if they say 'резервации' etc. but no number. Do not duplicate a phone URL into reservations_url.
+- reservations_phone: one MK mobile only, digits only (9 digits after normalization). Use leading 0 form (e.g. 071234567). If the caption shows +389 or 389, normalize to 0 + the rest. Never concatenate two numbers — if multiple numbers appear, use only the first. reservations_has_info true if they say 'резервации' etc. but no number. Do not duplicate a phone URL into reservations_url.
 - reservations_url: only a full http:// or https:// link for booking, tickets, Google Form, Eventbrite, venue reservation page. null if no such link. Never use tel: or sms: here.
 - location: venue + neighborhood/city when stated (free text).
 - city_mk: municipality/city in North Macedonia (Cyrillic preferred: Скопје, Битола, Охрид, …). For listing_type nightlife_event inside MK: set this whenever the city is implied — e.g. location says "Saloon, Skopje" or "Venue, Скопје" → city_mk must be "Скопје" (not null). Same for other MK cities in Latin or Cyrillic in location/caption/hashtags. null only if clearly outside MK or no basis.
@@ -456,7 +464,7 @@ def normalize_analysis(d: dict) -> dict:
         "event_date": ev_date,
         "start_time": st,
         "end_time": et,
-        "reservations_phone": _digits_phone(_clean_str(d.get("reservations_phone"))),
+        "reservations_phone": normalize_mk_reservations_phone(_clean_str(d.get("reservations_phone"))),
         "reservations_has_info": rhi,
         "reservations_url": _normalize_reservations_url(_clean_str(d.get("reservations_url"))),
         "location": _clean_str(d.get("location")),
@@ -520,7 +528,7 @@ def _fetch_image_bytes(url: str) -> tuple[bytes, str] | None:
     try:
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "NightLifeSkopje-Gemini/1.0"},
+            headers={"User-Agent": "NightLifeMK-Gemini/1.0"},
         )
         with urllib.request.urlopen(req, timeout=45) as resp:
             data = resp.read()

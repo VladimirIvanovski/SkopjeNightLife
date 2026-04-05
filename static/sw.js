@@ -1,4 +1,4 @@
-/* NightLife Skopje — minimal PWA shell (network-first; enables install criteria). */
+/* NightLife MK — minimal PWA shell (network-first; enables install criteria). */
 self.addEventListener("install", (event) => {
   event.waitUntil(self.skipWaiting());
 });

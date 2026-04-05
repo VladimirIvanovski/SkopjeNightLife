@@ -182,6 +182,47 @@ def post_visible_on_site(post: dict) -> bool:
     return _listing_type_from_post(post) == "nightlife_event"
 
 
+def normalize_mk_reservations_phone(raw: str | None) -> str | None:
+    """
+    Digits only. Leading country code 389 (from +389…) → 0 for local form.
+    If the model concatenates two numbers, keep only the first 9 digits (one MK mobile).
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    d = re.sub(r"\D", "", s)
+    if not d:
+        return None
+    if d.startswith("389"):
+        d = "0" + d[3:]
+    if len(d) > 9:
+        d = d[:9]
+    if len(d) < 6:
+        return None
+    return d
+
+
+def normalize_reservations_phone_in_post(post: dict) -> None:
+    """Normalize caption_analysis.reservations_phone in place (sync/upsert and display)."""
+    ca = post.get("caption_analysis")
+    if ca is None:
+        return
+    if isinstance(ca, str):
+        try:
+            ca_obj = json.loads(ca.strip() or "{}")
+        except json.JSONDecodeError:
+            return
+        if not isinstance(ca_obj, dict):
+            return
+        ca_obj["reservations_phone"] = normalize_mk_reservations_phone(ca_obj.get("reservations_phone"))
+        post["caption_analysis"] = ca_obj
+        return
+    if isinstance(ca, dict):
+        ca["reservations_phone"] = normalize_mk_reservations_phone(ca.get("reservations_phone"))
+
+
 def resolved_venue_category_slug(post: dict, username: str) -> str | None:
     """
     Slug for ?venue= filter and posts.venue_category column.
@@ -339,6 +380,7 @@ def upsert_post_row(conn, username: str, post: dict) -> None:
     """INSERT or UPDATE one post row (same columns as sync_from_json)."""
     if not isinstance(post, dict):
         return
+    normalize_reservations_phone_in_post(post)
     ts_dt = _post_ts(post)
     posted_at = None if ts_dt.year <= 1 else ts_dt
     pdate_s = _posted_date_str(post)

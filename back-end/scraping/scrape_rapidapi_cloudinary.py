@@ -123,7 +123,7 @@ def _default_scrape_rows() -> list[ScrapeRow]:
     ]
 
 
-_SCRAPE_TXT_HEADER = """# NightLife Skopje — Instagram usernames whose posts are scraped and media saved to Cloudinary.
+_SCRAPE_TXT_HEADER = """# NightLife MK — Instagram usernames whose posts are scraped and media saved to Cloudinary.
 # One row per account. Columns (pipe-separated):
 #   username | last_scraped_at_utc | next_rescrape_due_utc
 # Leave last/next empty until the first successful scrape. The scraper updates these automatically.

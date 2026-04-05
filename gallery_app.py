@@ -1,5 +1,5 @@
 """
-Night-out gallery: Skopje nightlife discovery — Cloudinary images, Gemini details, relative post age.
+Night-out gallery: NightLife MK — nightlife discovery (Cloudinary images, Gemini details, relative post age).
 
 Data store: SQLite at back-end/data/nightlife_catalog.db. Date filter uses AI event_date
 (Gemini), not Instagram post time. Ingest source: back-end/data/cloudinary_catalog.json —
@@ -57,8 +57,8 @@ def manifest_webmanifest():
     """PWA manifest. Paths are host-relative so start_url/icons always match the opened site (custom domain vs *.railway.app)."""
     data = {
         "id": "/",
-        "name": "NightLife Skopje",
-        "short_name": "NightLife SK",
+        "name": "NightLife MK",
+        "short_name": "NightLife MK",
         "description": "Откриј ноќни настани во Скопје",
         "lang": "mk",
         "start_url": "/",
@@ -75,7 +75,7 @@ def manifest_webmanifest():
                 "purpose": "any",
             },
             {
-                "src": "/static/icons/icon-192.png",
+                "src": "/static/icons/icon-192-maskable.png",
                 "sizes": "192x192",
                 "type": "image/png",
                 "purpose": "maskable",
@@ -87,7 +87,7 @@ def manifest_webmanifest():
                 "purpose": "any",
             },
             {
-                "src": "/static/icons/icon-512.png",
+                "src": "/static/icons/icon-512-maskable.png",
                 "sizes": "512x512",
                 "type": "image/png",
                 "purpose": "maskable",
