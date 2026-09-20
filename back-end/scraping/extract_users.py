@@ -5,7 +5,7 @@ Skips users already present in the output catalog (same -o path): no Apify run, 
 Use --force to re-scrape everyone.
 
 Env:
-  APIFY_API_TOKEN — Apify token (optional fallback in code for dev)
+  APIFY_API_TOKEN — Apify token (required)
   Cloudinary: load from ../database-adding-content/.env (CLOUDINARY_URL or CLOUD_NAME + API_KEY + API_SECRET)
 """
 
@@ -29,7 +29,7 @@ SCRAPING_DIR = Path(__file__).resolve().parent
 BACKEND_ROOT = SCRAPING_DIR.parent
 ENV_PATH = BACKEND_ROOT / "database-adding-content" / ".env"
 
-API_TOKEN = os.environ.get("APIFY_API_TOKEN", "apify_api_yG6pxDpEG3fB3MLHcgfWbUr5sQ2yiF2B8i7X")
+API_TOKEN = os.environ.get("APIFY_API_TOKEN", "")
 client = ApifyClient(API_TOKEN)
 
 USERNAMES = [

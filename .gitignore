@@ -10,3 +10,4 @@ back-end/data/*.lock
 .idea/
 # Local RapidAPI response dumps (debug)
 back-end/scraping/rapidapi_dump*.json
+rapidapi_dump*.json

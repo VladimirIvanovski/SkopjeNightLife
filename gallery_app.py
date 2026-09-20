@@ -1,10 +1,9 @@
 """
 Night-out gallery: NightLife MK — nightlife discovery (Cloudinary images, Gemini details, relative post age).
 
-Data store: SQLite at back-end/data/nightlife_catalog.db. Date filter uses AI event_date
-(Gemini), not Instagram post time. Ingest source: back-end/data/cloudinary_catalog.json —
-run `python catalog_db.py` after scraping
-to refresh the DB (or delete the .db to auto-import on next app start if JSON exists).
+Data store: Postgres (DATABASE_URL / DATABASE_PUBLIC_URL, see catalog_db). Date filter uses AI
+event_date (Gemini), not Instagram post time. Seed source: back-end/data/cloudinary_catalog.json —
+imported automatically when the posts table is empty; `python catalog_db.py` re-syncs it.
 
 Run (project root):
   .venv\\Scripts\\python gallery_app.py
